@@ -1,0 +1,11 @@
+{
+  "Body": {
+    "Data": {
+      "Site": {
+        "P_PV": 3837,
+        "E_Day": 6360,
+        "Mode": "produce-only"
+      }
+    }
+  }
+}

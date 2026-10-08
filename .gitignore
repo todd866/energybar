@@ -1,0 +1,14 @@
+build/
+.DS_Store
+*.env
+.env.*
+!.env.example
+*.pem
+*.p12
+.vscode/
+.idea/
+samples.jsonl
+*.jsonl
+a.out
+*.o
+*.dSYM/

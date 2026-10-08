@@ -1,0 +1,9 @@
+{
+  "data": {
+    "chargePointStatus": {
+      "chargingLogic": "Transfer",
+      "chargingCurrentControl": "SolarControl",
+      "chargeNow": false
+    }
+  }
+}

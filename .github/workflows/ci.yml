@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build, test, sanitize, and verify app bundle
+        env:
+          ENERGYBAR_ADHOC: "1"
+          ENERGYBAR_SANITIZERS: "1"
+          ENERGYBAR_SKIP_PIXEL_SNAPSHOTS: "1"
+        run: ./build.sh
