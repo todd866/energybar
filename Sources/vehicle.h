@@ -74,8 +74,16 @@ id<EBVehicleProvider> EBResolveVehicle(NSArray<id<EBVehicleProvider>> *chain);
 /// TODO(obd): parse cache + freshness (OBD_MAX_AGE_SECONDS); available when fresh.
 /// TODO(obd): sidecar BLE/ELM poller writing that file; PID once Car Scanner proves SoC.
 /// TODO(obd): poll only while Evnex reports plugged — never overnight idle.
+/// A direct reading written by a local helper (an OBD dongle sidecar, or a vehicle-cloud
+/// helper): JSON `{ "soc": 0…100, "at": ISO-8601 reading time, "checkedAt": ISO-8601 helper
+/// run, "source": "cloud", "rangeKm": n, "error": "…" }`. Available only when `soc` is
+/// present and the helper checked within maxAge; never invents a level from a stale file.
 @interface EBVehicleOBDProvider : NSObject <EBVehicleProvider>
 - (instancetype)initWithCachePath:(NSString *)path maxAgeSeconds:(NSTimeInterval)maxAge;
+- (instancetype)initWithCachePath:(NSString *)path maxAgeSeconds:(NSTimeInterval)maxAge
+                            label:(NSString *)label;
+@property(readonly, nullable) NSString *lastError;
+@property(readonly) double rangeKm;   // 0 = not reported
 @end
 
 /// Seam for a future manufacturer API client. available == NO until

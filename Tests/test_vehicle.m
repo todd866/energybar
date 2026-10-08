@@ -217,6 +217,32 @@ int main(void) {
         expect(!obd.hasSOC, @"OBD seam has no SoC");
         NSDictionary *obdDump = obd.dictionaryValue;
         expect([obdDump[@"source"] isEqualToString:@"obd"], @"OBD dump source");
+        // A helper's cache: a fresh reading is a direct (not estimated) level; a stale run or an
+        // error never yields a number.
+        {
+            NSString *cachePath = [dir stringByAppendingPathComponent:@"cloud.json"];
+            NSISO8601DateFormatter *iso = [NSISO8601DateFormatter new];
+            NSString *now = [iso stringFromDate:[NSDate date]];
+            NSData *fresh = [NSJSONSerialization dataWithJSONObject:@{@"soc": @64, @"rangeKm": @51, @"at": now,
+                                                                      @"checkedAt": now, @"source": @"cloud"} options:0 error:nil];
+            [fresh writeToFile:cachePath atomically:YES];
+            EBVehicleOBDProvider *cloud = [[EBVehicleOBDProvider alloc] initWithCachePath:cachePath
+                                                                          maxAgeSeconds:1800 label:@"cloud"];
+            expect(cloud.available && cloud.hasSOC && fabs(cloud.socPercent - 64) < 0.001 && !cloud.socIsEstimate,
+                   @"cloud cache: fresh reading is a direct level");
+            expect([cloud.statusLine containsString:@"64%"] && [cloud.statusLine containsString:@"51 km"],
+                   @"cloud cache: status line names level and range");
+            NSString *old = [iso stringFromDate:[NSDate dateWithTimeIntervalSinceNow:-7200]];
+            NSData *stale = [NSJSONSerialization dataWithJSONObject:@{@"soc": @64, @"at": old, @"checkedAt": old} options:0 error:nil];
+            [NSThread sleepForTimeInterval:1.1];   // a new mtime, so the provider re-reads
+            [stale writeToFile:cachePath atomically:YES];
+            expect(!cloud.available && !cloud.hasSOC, @"cloud cache: a stale helper run shows no level");
+            NSData *err = [NSJSONSerialization dataWithJSONObject:@{@"error": @"signed out", @"checkedAt": now} options:0 error:nil];
+            [NSThread sleepForTimeInterval:1.1];
+            [err writeToFile:cachePath atomically:YES];
+            expect(!cloud.available && [cloud.lastError isEqualToString:@"signed out"],
+                   @"cloud cache: an error is reported, not a number");
+        }
         expect(![obdDump[@"available"] boolValue], @"OBD dump unavailable");
         expect(![obdDump[@"estimated"] boolValue], @"OBD dump explicitly direct");
         expect([obd.statusLine containsString:@"OBD"], @"OBD status mentions OBD");

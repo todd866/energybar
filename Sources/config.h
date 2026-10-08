@@ -21,6 +21,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property double evChargeEfficiency;
 @property(copy) NSString *obdCachePath;
 @property NSTimeInterval obdMaxAgeSeconds;
+/// Vehicle cloud helper cache (VEHICLE_CLOUD_CACHE); default ~/.cache/energybar/vehicle-cloud.json.
+@property(copy) NSString *cloudCachePath;
 @property BOOL barText;
 @property(copy) NSString *tariffPath;
 @property(strong, nullable) EBTariff *tariff;

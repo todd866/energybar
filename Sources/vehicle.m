@@ -404,37 +404,87 @@ static NSString *EBAgePhrase(NSTimeInterval age) {
 @property NSTimeInterval maxAgeSeconds;
 @end
 
-@implementation EBVehicleOBDProvider
+@implementation EBVehicleOBDProvider {
+    NSDate *_loadedMtime;
+    BOOL _hasSOC;
+    double _soc, _range;
+    NSDate *_at, *_checkedAt;
+    NSString *_label, *_source, *_error;
+}
 - (instancetype)initWithCachePath:(NSString *)path maxAgeSeconds:(NSTimeInterval)maxAge {
+    return [self initWithCachePath:path maxAgeSeconds:maxAge label:@"OBD"];
+}
+- (instancetype)initWithCachePath:(NSString *)path maxAgeSeconds:(NSTimeInterval)maxAge
+                            label:(NSString *)label {
     self = [super init];
     if (self) {
         _cachePath = [path copy];
         _maxAgeSeconds = maxAge > 0 ? maxAge : 900;
-        // TODO(obd): call reload / parse ~/.cache/energybar/obd.json here.
-        // TODO(obd): available when soc present and at within maxAgeSeconds.
-        // TODO(obd): sidecar writes the file; do not invent SoC if missing/stale.
-        (void)_cachePath;
-        (void)_maxAgeSeconds;
+        _label = [label copy] ?: @"OBD";
     }
     return self;
 }
-// Seam only — never report SoC until cache parsing + freshness land.
-- (BOOL)available { return NO; }
-- (BOOL)hasSOC { return NO; }
-- (double)socPercent { return 0; }
+static NSDate *EBCacheDate(id value) {
+    if (![value isKindOfClass:NSString.class]) return nil;
+    NSISO8601DateFormatter *f = [NSISO8601DateFormatter new];
+    f.formatOptions = NSISO8601DateFormatWithInternetDateTime | NSISO8601DateFormatWithFractionalSeconds;
+    NSDate *d = [f dateFromString:value];
+    if (d) return d;
+    f.formatOptions = NSISO8601DateFormatWithInternetDateTime;
+    return [f dateFromString:value];
+}
+// Re-read only when the helper has rewritten the file.
+- (void)reloadIfChanged {
+    NSDictionary *attrs = [NSFileManager.defaultManager attributesOfItemAtPath:self.cachePath error:nil];
+    NSDate *mtime = attrs.fileModificationDate;
+    if (!mtime) { _hasSOC = NO; _loadedMtime = nil; _error = nil; return; }
+    if (_loadedMtime && [mtime isEqualToDate:_loadedMtime]) return;
+    _loadedMtime = mtime;
+    _hasSOC = NO; _soc = 0; _range = 0; _at = _checkedAt = nil; _source = nil; _error = nil;
+    NSData *data = [NSData dataWithContentsOfFile:self.cachePath];
+    id json = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    if (![json isKindOfClass:NSDictionary.class]) { _error = @"unreadable"; return; }
+    NSDictionary *d = json;
+    id soc = d[@"soc"];
+    if ([soc isKindOfClass:NSNumber.class] && isfinite([soc doubleValue]) &&
+        [soc doubleValue] >= 0 && [soc doubleValue] <= 100) { _hasSOC = YES; _soc = [soc doubleValue]; }
+    if ([d[@"rangeKm"] isKindOfClass:NSNumber.class]) _range = MAX(0, [d[@"rangeKm"] doubleValue]);
+    _at = EBCacheDate(d[@"at"]);
+    _checkedAt = EBCacheDate(d[@"checkedAt"]) ?: _at;
+    if ([d[@"source"] isKindOfClass:NSString.class]) _source = d[@"source"];
+    if ([d[@"error"] isKindOfClass:NSString.class]) _error = d[@"error"];
+}
+- (BOOL)fresh {
+    [self reloadIfChanged];
+    return _checkedAt && -_checkedAt.timeIntervalSinceNow <= self.maxAgeSeconds;
+}
+- (BOOL)available { return [self fresh] && _hasSOC; }
+- (BOOL)hasSOC { return [self available]; }
+- (double)socPercent { return [self available] ? _soc : 0; }
 - (BOOL)socIsEstimate { return NO; }
-- (NSDate *)socUpdatedAt { return nil; }
+- (NSDate *)socUpdatedAt { return [self available] ? (_at ?: _checkedAt) : nil; }
 - (NSDate *)socInvalidatedAt { return nil; }
 - (BOOL)hasReady { return NO; }
 - (BOOL)readyToCharge { return NO; }
 - (NSDate *)readyUpdatedAt { return nil; }
+- (NSString *)lastError { [self reloadIfChanged]; return _error; }
+- (double)rangeKm { return [self available] ? _range : 0; }
 - (NSString *)statusLine {
-    return @"OBD — not linked (see docs/obd-dongle.md)";
+    NSString *name = _source ?: _label;
+    if ([self available]) {
+        NSDateFormatter *f = [NSDateFormatter new];
+        f.dateFormat = @"HH:mm";
+        NSString *range = _range > 0 ? [NSString stringWithFormat:@" · %.0f km", _range] : @"";
+        return [NSString stringWithFormat:@"%.0f%%%@ · %@ %@", _soc, range, name, [f stringFromDate:_at ?: _checkedAt]];
+    }
+    if (_error.length) return [NSString stringWithFormat:@"%@ — %@", name, _error];
+    return [NSString stringWithFormat:@"%@ — no recent reading", name];
 }
 - (NSDictionary *)dictionaryValue {
+    [self reloadIfChanged];
     return @{
-        @"available": @NO,
-        @"source": @"obd",
+        @"available": @([self available]),
+        @"source": _label.lowercaseString ?: @"obd",
         @"estimated": @NO,
         @"statusLine": self.statusLine,
         @"cachePath": self.cachePath ?: @"",

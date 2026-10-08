@@ -175,6 +175,11 @@ EBConfig *EBLoadConfig(void) {
     config.obdMaxAgeSeconds = EBParseFiniteDouble(obdAge, &obdAgeValue) ? obdAgeValue : 900;
     if (config.obdMaxAgeSeconds <= 0) config.obdMaxAgeSeconds = 900;
 
+    NSString *cloudPath = EBConfigString(file, @"VEHICLE_CLOUD_CACHE");
+    config.cloudCachePath = cloudPath.length
+        ? cloudPath.stringByExpandingTildeInPath.stringByStandardizingPath
+        : [EBHome() stringByAppendingPathComponent:@".cache/energybar/vehicle-cloud.json"];
+
     NSString *barText = EBConfigString(file, @"ENERGYBAR_BAR_TEXT").lowercaseString;
     BOOL textEnabled = [barText isEqualToString:@"1"] || [barText isEqualToString:@"true"] ||
                        [barText isEqualToString:@"yes"];

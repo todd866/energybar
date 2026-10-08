@@ -613,6 +613,7 @@ static NSColor *EBBarColor(EBBarState st, NSString *glyph) {
 @property EBVehicleManualProvider *vehicleManual;
 @property EBVehicleInferredProvider *vehicleInferred;
 @property EBVehicleOBDProvider *vehicleOBD;
+@property EBVehicleOBDProvider *vehicleCloud;
 @property EBVehicleLiveProvider *vehicleLive;
 @property id<EBVehicleProvider> vehicle;
 @property double lastSupplyW;
@@ -799,11 +800,14 @@ static NSArray<NSDictionary *> *EBChartPVRows(NSArray<EBFroniusPVInterval *> *ar
     self.vehicleInferred = [[EBVehicleInferredProvider alloc] initWithPath:vehicleStatePath
                                                             capacityWh:self.config.evBatteryWh
                                                             efficiency:self.config.evChargeEfficiency];
-    // TODO(obd): enable when sidecar writes a fresh cache; seam stays unavailable until then.
     self.vehicleOBD = [[EBVehicleOBDProvider alloc] initWithCachePath:self.config.obdCachePath
                                                    maxAgeSeconds:self.config.obdMaxAgeSeconds];
+    // A local helper reads the car's level from the manufacturer's cloud and writes this file.
+    self.vehicleCloud = [[EBVehicleOBDProvider alloc] initWithCachePath:self.config.cloudCachePath
+                                                     maxAgeSeconds:1800 label:@"cloud"];
     self.vehicleLive = [[EBVehicleLiveProvider alloc] initWithTokenPath:vehicleTokenPath];
-    self.vehicle = EBResolveVehicle(@[self.vehicleOBD, self.vehicleLive, self.vehicleInferred, self.vehicleManual]);
+    self.vehicle = EBResolveVehicle(@[self.vehicleOBD, self.vehicleCloud, self.vehicleLive,
+                                      self.vehicleInferred, self.vehicleManual]);
     self.evnexPollInterval = EBEvnexBasePollInterval;
     self.item = [NSStatusBar.systemStatusBar statusItemWithLength:
                  self.config.barText ? NSVariableStatusItemLength : NSSquareStatusItemLength];
@@ -1005,7 +1009,8 @@ static NSArray<NSDictionary *> *EBChartPVRows(NSArray<EBFroniusPVInterval *> *ar
                                                       sessions:sessions
                                                            now:[NSDate date]];
     // TODO(obd): refresh OBD cache read here; poll sidecar only while charger plugged.
-    self.vehicle = EBResolveVehicle(@[self.vehicleOBD, self.vehicleLive, self.vehicleInferred, self.vehicleManual]);
+    self.vehicle = EBResolveVehicle(@[self.vehicleOBD, self.vehicleCloud, self.vehicleLive,
+                                      self.vehicleInferred, self.vehicleManual]);
     NSMutableArray<NSString *> *problems = [NSMutableArray array];
     if (self.vehicleManual.persistenceError)
         [problems addObject:self.vehicleManual.persistenceError.localizedDescription];
@@ -1418,6 +1423,8 @@ static int EBDump(BOOL jsonMode) {
         initWithPath:vehicleStatePath capacityWh:c.evBatteryWh efficiency:c.evChargeEfficiency];
     EBVehicleOBDProvider *obd = [[EBVehicleOBDProvider alloc] initWithCachePath:c.obdCachePath
                                                              maxAgeSeconds:c.obdMaxAgeSeconds];
+    EBVehicleOBDProvider *cloud = [[EBVehicleOBDProvider alloc] initWithCachePath:c.cloudCachePath
+                                                               maxAgeSeconds:1800 label:@"cloud"];
     EBVehicleLiveProvider *live = [[EBVehicleLiveProvider alloc]
         initWithTokenPath:vehicleTokenPath];
     NSArray *samples = EBStoreLoad(c.samplesPath, EBStoreMaxAge);
@@ -1441,7 +1448,7 @@ static int EBDump(BOOL jsonMode) {
     BOOL inferredSaved = [inferred updateWithSamples:samples
                                              sessions:EBSessionInferenceRecords(s.sessionHistory)
                                                   now:[NSDate date]];
-    id<EBVehicleProvider> vehicle = EBResolveVehicle(@[obd, live, inferred, manual]);
+    id<EBVehicleProvider> vehicle = EBResolveVehicle(@[obd, cloud, live, inferred, manual]);
     NSMutableArray<NSString *> *vehicleProblems = [NSMutableArray array];
     if (manual.persistenceError)
         [vehicleProblems addObject:manual.persistenceError.localizedDescription];

@@ -11,7 +11,7 @@ vehicle state without treating missing data as zero or an estimate as fact.
 - 12-hour and 48-hour history. Solar is above the marked zero, split into car (blue), home (grey) and export (green); grid import is below, in red. Rounded axis limits share one linear scale. A hatched band is a gap in the samples, not a zero. Hover gives the power breakdown and import total, with calendar dates in the 48-hour view;
 - Solar and Charge now as one mode control (orange for solar, green for charge now). Stop is a separate button and asks before sending a remote stop;
 - day totals with explicit partial-coverage caveats and metered shutdown recovery;
-- direct or estimated vehicle SoC with visible provenance;
+- direct or estimated vehicle SoC with visible provenance. A direct reading can come from a local helper that writes `~/.cache/energybar/vehicle-cloud.json` (`soc`, `at`, `checkedAt`, optional `rangeKm`, `source`, `error`); it is used only while the helper checked within the last 30 minutes, and an `error` is shown rather than a number;
 - charger actions whose HTTP failures are shown instead of silently ignored.
 
 The menu-bar item is icon-only by default. Error and unknown states use distinct
