@@ -1048,12 +1048,13 @@ static NSDictionary *EBForecastCache(void) {
     // TODO(obd): refresh OBD cache read here; poll sidecar only while charger plugged.
     self.vehicle = EBResolveVehicle(@[self.vehicleOBD, self.vehicleCloud, self.vehicleLive,
                                       self.vehicleInferred, self.vehicleManual]);
+    BOOL lastKnownSaved = [self.vehicleInferred rememberLastKnownSOC:self.vehicle.dictionaryValue[@"lastKnownSOC"]];
     NSMutableArray<NSString *> *problems = [NSMutableArray array];
     if (self.vehicleManual.persistenceError)
         [problems addObject:self.vehicleManual.persistenceError.localizedDescription];
     if (self.vehicleInferred.persistenceError)
         [problems addObject:self.vehicleInferred.persistenceError.localizedDescription];
-    if (!inferredSaved && !problems.count)
+    if ((!inferredSaved || !lastKnownSaved) && !problems.count)
         [problems addObject:@"Vehicle state could not be persisted"];
     self.vehicleStorageWarning = problems.count
         ? [NSString stringWithFormat:@"Vehicle state not saved — %@",
@@ -1194,6 +1195,8 @@ static NSDictionary *EBForecastCache(void) {
             vm.vehicleHasReady = self.vehicle.hasReady;
             vm.vehicleReady = self.vehicle.readyToCharge;
             vm.vehicleSOCIsEstimate = self.vehicle.socIsEstimate;
+            vm.vehicleLastKnownSOC = self.vehicle.dictionaryValue[@"lastKnownSOC"];
+            vm.vehicleSOCSource = self.vehicle.dictionaryValue[@"socSource"] ?: self.vehicle.dictionaryValue[@"source"];
             vm.vehicleCapacityWh = self.config.evBatteryWh;
             vm.vehicleChargeEfficiency = self.config.evChargeEfficiency;
             vm.vehicleChargeTargetPercent = self.config.evChargeTargetPercent;
@@ -1203,7 +1206,7 @@ static NSDictionary *EBForecastCache(void) {
                 ? [@"vehicle cloud: " stringByAppendingString:self.vehicleCloud.lastError] : nil;
             vm.inverterW = self.config.inverterW;
             vm.vehicleHasStoredState = self.vehicle.hasSOC || self.vehicle.hasReady
-                || self.vehicle.socInvalidatedAt != nil;
+                || self.vehicle.socInvalidatedAt != nil || vm.vehicleLastKnownSOC != nil;
             vm.referenceDate = [NSDate date];
             dispatch_async(EBStoreQueue(), ^{
                 vm.forecast = EBForecastForSnapshot(vm, solarRows, samples, weather);
@@ -1724,6 +1727,8 @@ static int EBDump(BOOL jsonMode, NSString *renderPrefix) {
     estimateView.referenceDate = dumpNow;
     estimateView.vehicleHasSOC = vehicle.hasSOC; estimateView.vehicleSOC = vehicle.socPercent;
     estimateView.vehicleSOCIsEstimate = vehicle.socIsEstimate;
+    estimateView.vehicleLastKnownSOC = vehicle.dictionaryValue[@"lastKnownSOC"];
+    estimateView.vehicleSOCSource = vehicle.dictionaryValue[@"socSource"] ?: vehicle.dictionaryValue[@"source"];
     estimateView.vehicleSOCAt = vehicle.socUpdatedAt;
     estimateView.vehicleCapacityWh = c.evBatteryWh; estimateView.vehicleChargeEfficiency = c.evChargeEfficiency;
     estimateView.vehicleChargeTargetPercent = c.evChargeTargetPercent;
@@ -1733,7 +1738,8 @@ static int EBDump(BOOL jsonMode, NSString *renderPrefix) {
     estimateView.vehicleLine = vehicle.statusLine;
     estimateView.vehicleCloudLine = cloud.statusLine;
     estimateView.vehicleHasReady = vehicle.hasReady; estimateView.vehicleReady = vehicle.readyToCharge;
-    estimateView.vehicleHasStoredState = vehicle.hasSOC || vehicle.hasReady || vehicle.socInvalidatedAt != nil;
+    estimateView.vehicleHasStoredState = vehicle.hasSOC || vehicle.hasReady || vehicle.socInvalidatedAt != nil
+        || estimateView.vehicleLastKnownSOC != nil;
     estimateView.inverterW = c.inverterW; estimateView.tariff = c.tariff; estimateView.tariffError = c.tariffError;
     estimateView.gridCostToday = gridCosts; estimateView.today = EBStoreIntegrateSince(samples, dumpDay, dumpNow);
     estimateView.pvArchiveAvailable = archiveDay.hasData; estimateView.pvArchiveWh = archiveDay.energyWh;

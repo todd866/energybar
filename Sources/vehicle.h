@@ -58,6 +58,8 @@ id<EBVehicleProvider> EBResolveVehicle(NSArray<id<EBVehicleProvider>> *chain);
 /// Seed / replace the persisted anchor (e.g. after a manual entry while plugged).
 /// EBSoCSourceNone and the legacy EBSoCSourceFullCharge are rejected.
 - (BOOL)setAnchorPercent:(double)percent at:(NSDate *)at source:(EBSoCSource)source;
+/// Display history only: does not establish an anchor or make hasSOC true.
+- (BOOL)rememberLastKnownSOC:(nullable NSDictionary *)reading;
 - (BOOL)clearAnchor;
 /// Clear the inferred anchor and unplug tombstone, while retaining a private
 /// history high-water mark so old samples cannot recreate the cleared state.

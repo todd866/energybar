@@ -178,6 +178,19 @@ static NSString *EBProviderSource(id<EBVehicleProvider> provider) {
     return [source isKindOfClass:NSString.class] ? source : @"none";
 }
 
+// Historical display evidence is deliberately separate from hasSOC and the ETA inputs.
+static NSDictionary *EBLastKnownSOC(id value) {
+    if (![value isKindOfClass:NSDictionary.class]) return nil;
+    NSNumber *pct=EBFiniteStateNumber(value[@"percent"]);
+    NSDate *at=EBDateFromValue(value[@"at"]);
+    NSString *source=[value[@"source"] isKindOfClass:NSString.class] ? value[@"source"] : nil;
+    if (!pct || pct.doubleValue<0 || pct.doubleValue>100 || !at || !source.length ||
+        [source isEqual:@"none"] || [source isEqual:@"full"] || [source isEqual:@"inferred-full"]) return nil;
+    NSNumber *estimated=EBBooleanStateValue(value[@"estimated"]);
+    return @{@"percent":pct,@"at":EBDateString(at),@"source":source,
+             @"estimated":@(estimated.boolValue)};
+}
+
 @interface EBVehicleResolvedProvider : NSObject <EBVehicleProvider>
 @property(strong, nullable) id<EBVehicleProvider> socProvider;
 @property(strong, nullable) id<EBVehicleProvider> readyProvider;
@@ -185,6 +198,7 @@ static NSString *EBProviderSource(id<EBVehicleProvider> provider) {
 @property(copy, nullable) NSDate *continuityUnknownAt;
 @property(copy, nullable) NSString *continuityUnknownReason;
 @property NSTimeInterval continuityGapSeconds;
+@property(copy, nullable) NSDictionary *lastKnownSOC;
 @end
 
 @implementation EBVehicleResolvedProvider
@@ -210,7 +224,7 @@ static NSString *EBProviderSource(id<EBVehicleProvider> provider) {
                 self.readyProvider.readyToCharge ? @"ready" : @"not ready"];
     }
     if (self.socProvider) return self.socProvider.statusLine;
-    if (self.latestInvalidation) {
+    if (self.latestInvalidation && !self.continuityUnknownAt) {
         NSString *status = @"Battery unknown · cleared after unplug";
         if (self.readyProvider) {
             status = [status stringByAppendingFormat:@" · %@",
@@ -259,6 +273,7 @@ static NSString *EBProviderSource(id<EBVehicleProvider> provider) {
     }
     if (self.latestInvalidation)
         d[@"socInvalidatedAt"] = EBDateString(self.latestInvalidation);
+    if (self.lastKnownSOC) d[@"lastKnownSOC"] = self.lastKnownSOC;
     if (self.continuityUnknownAt) {
         d[@"unknownReason"] = self.continuityUnknownReason ?: @"telemetry-gap";
         d[@"continuityUnknownAt"] = EBDateString(self.continuityUnknownAt);
@@ -273,9 +288,20 @@ id<EBVehicleProvider> EBResolveVehicle(NSArray<id<EBVehicleProvider>> *chain) {
     NSDate *latestContinuityUnknownAt = nil;
     NSString *latestContinuityReason = nil;
     NSTimeInterval latestContinuityGap = 0;
+    NSDictionary *lastKnownSOC=nil;
     for (id<EBVehicleProvider> provider in chain) {
         latestInvalidation = EBLaterDate(latestInvalidation, provider.socInvalidatedAt);
         NSDictionary *state = provider.dictionaryValue;
+        NSMutableArray *candidates=[NSMutableArray array];
+        if (state[@"lastKnownSOC"]) [candidates addObject:state[@"lastKnownSOC"]];
+        if (provider.hasSOC && provider.socUpdatedAt) [candidates addObject:@{
+            @"percent":@(provider.socPercent),@"at":EBDateString(provider.socUpdatedAt),
+            @"source":EBProviderSource(provider),@"estimated":@(provider.socIsEstimate)}];
+        for (NSDictionary *candidate in candidates) {
+            NSDictionary *valid=EBLastKnownSOC(candidate);
+            if (valid && (!lastKnownSOC || [EBDateFromValue(valid[@"at"]) compare:EBDateFromValue(lastKnownSOC[@"at"])]==NSOrderedDescending))
+                lastKnownSOC=valid;
+        }
         if (![state[@"continuityUnknown"] boolValue]) continue;
         NSDate *unknownAt = EBDateFromValue(state[@"continuityUnknownAt"]);
         if (!unknownAt) continue;
@@ -318,8 +344,11 @@ id<EBVehicleProvider> EBResolveVehicle(NSArray<id<EBVehicleProvider>> *chain) {
                     // keeps a successfully-saved manual edit visible if updating
                     // the secondary inference cache fails.
                     NSDate *current = socProvider.socUpdatedAt;
+                    BOOL confirmedFull = updated && current && [updated isEqualToDate:current] &&
+                        provider.socPercent>=100 && socProvider.socPercent>=100 &&
+                        updated.timeIntervalSinceNow<=60 && updated.timeIntervalSinceNow>=-1800;
                     if (updated && (!current ||
-                        [updated compare:current] == NSOrderedDescending))
+                        [updated compare:current] == NSOrderedDescending || confirmedFull))
                         socProvider = provider;
                 }
             }
@@ -327,12 +356,13 @@ id<EBVehicleProvider> EBResolveVehicle(NSArray<id<EBVehicleProvider>> *chain) {
         if (!readyProvider && provider.hasReady) readyProvider = provider;
     }
     if (!socProvider && !readyProvider && !latestInvalidation
-        && !latestContinuityUnknownAt)
+        && !latestContinuityUnknownAt && !lastKnownSOC)
         return [EBVehicleStubProvider new];
     EBVehicleResolvedProvider *resolved = [EBVehicleResolvedProvider new];
     resolved.socProvider = socProvider;
     resolved.readyProvider = readyProvider;
     resolved.latestInvalidation = latestInvalidation;
+    resolved.lastKnownSOC=lastKnownSOC;
     // A newer direct reading re-establishes SoC even if an older inferred
     // provider still reports the historical gap (for example after a secondary
     // anchor-cache write failure).
@@ -785,6 +815,7 @@ static NSDate *EBCacheDate(id value) {
 @property(copy, nullable) NSDate *invalidatedAt;
 @property(copy, nullable) NSDate *historyClearedAt;
 @property EBSoCEstimate estimate;
+@property(copy, nullable) NSDictionary *lastKnownSOC;
 @property(copy, nullable, readwrite) NSError *persistenceError;
 - (void)loadState;
 - (BOOL)persistState;
@@ -822,6 +853,7 @@ static NSDate *EBCacheDate(id value) {
     self.anchorSource = EBSoCSourceNone;
     self.invalidatedAt = nil;
     self.historyClearedAt = nil;
+    self.lastKnownSOC = nil;
     NSError *readError = nil;
     NSData *data = [NSData dataWithContentsOfFile:self.path options:0 error:&readError];
     if (!data) {
@@ -842,6 +874,7 @@ static NSDate *EBCacheDate(id value) {
     NSDictionary *j = root;
     self.invalidatedAt = EBDateFromValue(j[@"invalidatedAt"]);
     self.historyClearedAt = EBDateFromValue(j[@"historyClearedAt"]);
+    self.lastKnownSOC = EBLastKnownSOC(j[@"lastKnownSOC"]);
     NSNumber *soc = EBFiniteStateNumber(j[@"soc"]);
     id at = j[@"at"];
     NSString *src = j[@"source"];
@@ -863,6 +896,7 @@ static NSDate *EBCacheDate(id value) {
     self.anchorPct = fmin(100.0, fmax(0.0, percent));
     self.anchorAt = when;
     self.anchorSource = source;
+    if (!self.lastKnownSOC) self.lastKnownSOC=EBLastKnownSOC(@{@"percent":@(self.anchorPct),@"at":EBDateString(when),@"source":EBSoCSourceKey(source),@"estimated":@NO});
     if (self.invalidatedAt
         && [self.anchorAt compare:self.invalidatedAt] != NSOrderedDescending) {
         self.anchorPct = -1;
@@ -885,6 +919,7 @@ static NSDate *EBCacheDate(id value) {
         j[@"invalidatedAt"] = EBDateString(self.invalidatedAt);
     if (self.historyClearedAt)
         j[@"historyClearedAt"] = EBDateString(self.historyClearedAt);
+    if (self.lastKnownSOC) j[@"lastKnownSOC"] = self.lastKnownSOC;
     NSError *error = nil;
     if (!j.count) {
         BOOL removed = EBRemovePersistedFile(self.path, &error);
@@ -907,29 +942,46 @@ static NSDate *EBCacheDate(id value) {
     double oldPercent = self.anchorPct;
     NSDate *oldAt = self.anchorAt;
     EBSoCSource oldSource = self.anchorSource;
+    NSDictionary *oldLastKnown = self.lastKnownSOC;
     self.anchorPct = fmin(100.0, fmax(0.0, percent));
     self.anchorAt = when;
     self.anchorSource = source;
+    self.lastKnownSOC=EBLastKnownSOC(@{@"percent":@(self.anchorPct),@"at":EBDateString(when),@"source":EBSoCSourceKey(source),@"estimated":@NO});
     if ([self persistState]) return YES;
     self.anchorPct = oldPercent;
     self.anchorAt = oldAt;
     self.anchorSource = oldSource;
+    self.lastKnownSOC = oldLastKnown;
     return NO;
+}
+
+- (BOOL)rememberLastKnownSOC:(NSDictionary *)reading {
+    NSDictionary *valid=EBLastKnownSOC(reading);
+    if (!valid) return YES;
+    NSDate *at=EBDateFromValue(valid[@"at"]),*last=EBDateFromValue(self.lastKnownSOC[@"at"]);
+    if (at.timeIntervalSinceNow>60 || (last && [at compare:last]!=NSOrderedDescending) ||
+        (self.historyClearedAt && [at compare:self.historyClearedAt]!=NSOrderedDescending)) return YES;
+    NSDictionary *old=self.lastKnownSOC; self.lastKnownSOC=valid;
+    if ([self persistState]) return YES;
+    self.lastKnownSOC=old; return NO;
 }
 
 - (BOOL)clearAnchor {
     double oldPercent = self.anchorPct;
     NSDate *oldAt = self.anchorAt;
     EBSoCSource oldSource = self.anchorSource;
+    NSDictionary *oldLastKnown = self.lastKnownSOC;
     EBSoCEstimate oldEstimate = self.estimate;
     self.anchorPct = -1;
     self.anchorAt = nil;
     self.anchorSource = EBSoCSourceNone;
     self.estimate = (EBSoCEstimate){0};
+    self.lastKnownSOC = nil;
     if ([self persistState]) return YES;
     self.anchorPct = oldPercent;
     self.anchorAt = oldAt;
     self.anchorSource = oldSource;
+    self.lastKnownSOC = oldLastKnown;
     self.estimate = oldEstimate;
     return NO;
 }
@@ -938,6 +990,7 @@ static NSDate *EBCacheDate(id value) {
     double oldPercent = self.anchorPct;
     NSDate *oldAt = self.anchorAt;
     EBSoCSource oldSource = self.anchorSource;
+    NSDictionary *oldLastKnown = self.lastKnownSOC;
     NSDate *oldInvalidatedAt = self.invalidatedAt;
     NSDate *oldHistoryClearedAt = self.historyClearedAt;
     EBSoCEstimate oldEstimate = self.estimate;
@@ -954,10 +1007,12 @@ static NSDate *EBCacheDate(id value) {
         ? [oldInvalidatedAt dateByAddingTimeInterval:1.0] : nil;
     self.historyClearedAt = EBLaterDate([NSDate date], clearedThrough);
     self.estimate = (EBSoCEstimate){0};
+    self.lastKnownSOC = nil;
     if ([self persistState]) return YES;
     self.anchorPct = oldPercent;
     self.anchorAt = oldAt;
     self.anchorSource = oldSource;
+    self.lastKnownSOC = oldLastKnown;
     self.invalidatedAt = oldInvalidatedAt;
     self.historyClearedAt = oldHistoryClearedAt;
     self.estimate = oldEstimate;
@@ -997,13 +1052,21 @@ static NSDate *EBCacheDate(id value) {
         self.anchorSource = EBSoCSourceNone;
         stateChanged = YES;
     }
-    BOOL persisted = YES;
-    if (stateChanged || self.persistenceError)
-        persisted = [self persistState];
     self.estimate = EBInferSoCWithSessions(
         samples, sessions, self.anchorPct, self.anchorAt, self.anchorSource,
         self.capacityWh, self.efficiency, eval);
-    return persisted;
+    if (self.estimate.known) {
+        NSDate *lastAt=EBDateFromValue(self.lastKnownSOC[@"at"]);
+        if (!lastAt || [eval timeIntervalSinceDate:lastAt]>=300 ||
+            fabs([self.lastKnownSOC[@"percent"] doubleValue]-self.estimate.percent)>=.1) {
+            self.lastKnownSOC=@{@"percent":@(self.estimate.percent),@"at":EBDateString(eval),
+                @"source":[@"inferred-" stringByAppendingString:EBSoCSourceKey(self.estimate.source)],@"estimated":@YES};
+            stateChanged=YES;
+        }
+    }
+    // Gaps and disconnects invalidate current inference, not its historical display record.
+    if (stateChanged || self.persistenceError) return [self persistState];
+    return YES;
 }
 
 - (BOOL)available { return self.estimate.known; }
@@ -1060,6 +1123,7 @@ static NSDate *EBCacheDate(id value) {
     }
     if (self.invalidatedAt)
         d[@"socInvalidatedAt"] = EBDateString(self.invalidatedAt);
+    if (self.lastKnownSOC) d[@"lastKnownSOC"] = self.lastKnownSOC;
     return d;
 }
 

@@ -91,6 +91,19 @@ static EBPowerForecast *EBSyntheticForecast(NSString *name) {
 }
 
 static EBSnapshotView *EBState(NSString *name) {
+    if ([name hasPrefix:@"battery-"]) {
+        EBSnapshotView *s=EBState(@"solar-charging"); s.chargeW=0;
+        s.vehicleHasSOC=[name isEqual:@"battery-reported-full"];
+        s.vehicleSOC=100; s.vehicleSOCIsEstimate=NO; s.vehicleSOCSource=@"manual";
+        s.vehicleHasStoredState=![name isEqual:@"battery-unknown"];
+        if ([name hasPrefix:@"battery-last-"]) {
+            NSISO8601DateFormatter *clock=[NSISO8601DateFormatter new];
+            s.vehicleLastKnownSOC=@{@"percent":@100,@"at":[clock stringFromDate:[s.referenceDate dateByAddingTimeInterval:-3600]],
+                @"source":@"inferred-manual",@"estimated":@YES};
+        }
+        if ([name isEqual:@"battery-last-unplugged"]) { s.ocppStatus=@"AVAILABLE"; s.chargingLogic=@"NoVehicle"; }
+        return s;
+    }
     if ([name hasPrefix:@"forecast-"]) {
         EBSnapshotView *s=EBState(@"solar-charging");
         s.forecast=EBSyntheticForecast(name);
@@ -781,7 +794,8 @@ int main(int argc, const char *argv[]) {
                             @"tariff-history-48h", @"charge-eta-full", @"charge-eta-target", @"charge-eta-near",
                             @"charge-eta-complete", @"charge-eta-estimated-complete", @"charge-eta-paused", @"charge-eta-stale", @"charge-eta-signed-out",
                             @"forecast-charging", @"forecast-signed-out", @"forecast-stopped",
-                            @"forecast-solar-only", @"forecast-unavailable", @"forecast-expired-car"];
+                            @"forecast-solar-only", @"forecast-unavailable", @"forecast-expired-car",
+                            @"battery-unknown", @"battery-reported-full", @"battery-last-full", @"battery-last-unplugged"];
         NSString *renderDir = [EBRepoRoot() stringByAppendingPathComponent:@"build/render"];
         NSString *snapDir = [EBRepoRoot() stringByAppendingPathComponent:@"Tests/snapshots"];
         [[NSFileManager defaultManager] createDirectoryAtPath:renderDir withIntermediateDirectories:YES attributes:nil error:nil];
@@ -1052,6 +1066,23 @@ int main(int argc, const char *argv[]) {
                         EBFail("%s: unexpected tooltip: %s", st, tipped.toolTip.UTF8String);
                 if ([name isEqualToString:@"solar-charging"])
                     EBExpect(fabs(pv.solarRow.gaugeFraction - 0.96) < 0.001, "solar bar is full at the inverter's 5 kW");
+                if ([name hasPrefix:@"battery-"]) {
+                    EBExpect(pv.carRow.targetLabel.length==0 && pv.carRow.trendFrom<0,
+                             "completed or unknown battery has no ETA label or trend");
+                    if ([name isEqual:@"battery-unknown"]) {
+                        EBExpect(pv.carRow.gaugeFraction<0 && [pv.carRow.value isEqual:@"0.0"],
+                                 "unknown battery hides the gauge while measured zero charging remains a power value");
+                        EBExpect([pv.detailsText containsString:@"battery level unknown"], "unknown is explicitly described");
+                    } else EBExpect(pv.carRow.gaugeFraction==1, "reported/last-known full retains the full battery shape");
+                    if ([name hasPrefix:@"battery-last-"]) {
+                        EBExpect([pv.carRow.symbolName isEqual:@"clock.fill"] &&
+                                 [pv.detailsText containsString:@"last known battery 100%"] &&
+                                 [pv.detailsText containsString:@"display only"],
+                                 "last-known full is visibly stale and excluded from current charging estimates");
+                    }
+                }
+                if (!snap.vehicleHasSOC && !snap.vehicleLastKnownSOC)
+                    EBExpect(pv.carRow.gaugeFraction<0,"missing SoC never substitutes a charging-power bar");
                 if ([name hasPrefix:@"charge-eta-"]) {
                     EBChargeEstimate *eta = EBChargeEstimateForSnapshot(snap, @[]);
                     for (NSString *edge in @[@"charge-eta-low-target", @"charge-eta-long"]) {
@@ -1089,7 +1120,7 @@ int main(int argc, const char *argv[]) {
                     EBExpect(fabs(pv.carRow.gaugeFraction - 0.58) < 0.001, "car bar is the 58% pack level");
                     EBExpect(fabs(pv.carRow.trendTo - (0.58 + 2400 * 0.9 / 60000)) < 0.001,
                              "trend arrow runs to the level an hour of charging reaches");
-                    EBExpect([pv.detailsText containsString:@"battery 58% est."],
+                    EBExpect([pv.detailsText containsString:@"battery 58% estimated"],
                              "estimated provenance is on the explicit Details");
                     EBExpect(![pv.carRow.subline containsString:@"est."], "no estimate word on the row itself");
                     EBExpect([pv.carRow.accessibilityLabel containsString:@"battery 58% estimated"],

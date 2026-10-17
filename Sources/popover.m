@@ -632,23 +632,44 @@ void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *s, NSArray<NSDictionary 
     car.datumInk = nil;
     // Quantity plus flow, as Glancebar's battery: with a known state of charge the bar is the
     // pack and a trend arrow rides on it to where it will be in an hour at this charging rate.
-    double carSOC = s.vehicleHasSOC ? MIN(100, MAX(0, s.vehicleSOC)) / 100.0 : -1;
+    NSTimeInterval batteryAge = s.vehicleSOCAt ? [referenceDate timeIntervalSinceDate:s.vehicleSOCAt] : INFINITY;
+    BOOL currentSOC = s.vehicleHasSOC && isfinite(s.vehicleSOC) && s.vehicleSOC>=0 && s.vehicleSOC<=100 &&
+        (s.vehicleSOCIsEstimate || (batteryAge >= -60 && batteryAge <= 1800));
+    NSDictionary *lastSOC = [s.vehicleLastKnownSOC isKindOfClass:NSDictionary.class] ? s.vehicleLastKnownSOC : @{};
+    if (!currentSOC && s.vehicleHasSOC && s.vehicleSOCAt) lastSOC = @{
+        @"percent":@(s.vehicleSOC), @"at":s.vehicleSOCAt, @"source":s.vehicleSOCSource ?: @"manual",
+        @"estimated":@(s.vehicleSOCIsEstimate)};
+    NSDate *lastAt = [lastSOC[@"at"] isKindOfClass:NSDate.class] ? lastSOC[@"at"] : nil;
+    if (!lastAt && [lastSOC[@"at"] isKindOfClass:NSString.class]) {
+        NSISO8601DateFormatter *clock=[NSISO8601DateFormatter new];
+        clock.formatOptions=NSISO8601DateFormatWithInternetDateTime|NSISO8601DateFormatWithFractionalSeconds;
+        lastAt=[clock dateFromString:lastSOC[@"at"]];
+        if (!lastAt) { clock.formatOptions=NSISO8601DateFormatWithInternetDateTime; lastAt=[clock dateFromString:lastSOC[@"at"]]; }
+    }
+    id lastPercent=lastSOC[@"percent"];
+    BOOL historicalSOC = !currentSOC && [lastPercent isKindOfClass:NSNumber.class] &&
+        CFGetTypeID((__bridge CFTypeRef)lastPercent)!=CFBooleanGetTypeID() && isfinite([lastPercent doubleValue]) &&
+        [lastPercent doubleValue]>=0 && [lastPercent doubleValue]<=100 && lastAt &&
+        [referenceDate timeIntervalSinceDate:lastAt]>=-60;
+    double carSOC = currentSOC ? MIN(100, MAX(0, s.vehicleSOC)) / 100.0 : historicalSOC ? [lastPercent doubleValue]/100 : -1;
     EBChargeEstimate *eta = EBChargeEstimateForSnapshot(s, samples);
-    car.targetFraction = carSOC >= 0 && eta.label.length ? eta.targetPercent / 100 : -1;
+    car.targetFraction = currentSOC && eta.label.length ? eta.targetPercent / 100 : -1;
     car.targetLabel = eta.label;
     car.targetHelp = eta.detail;
     car.trendFrom = car.trendTo = -1;
     if (carSOC >= 0) {
         NSColor *packInk = blue;
         car.gaugeFraction = carSOC;
-        car.gaugeColor = s.vehicleSOCIsEstimate ? [packInk colorWithAlphaComponent:0.5] : packInk;
-        if (charging && eta.available && s.vehicleCapacityWh > 0) {
+        car.gaugeColor = historicalSOC ? [packInk colorWithAlphaComponent:0.28] : s.vehicleSOCIsEstimate ? [packInk colorWithAlphaComponent:0.5] : packInk;
+        if (historicalSOC) { car.symbolName=@"clock.fill"; car.tint=EBInkStale(); }
+        if (currentSOC && charging && eta.available && s.vehicleCapacityWh > 0) {
             double eff = s.vehicleChargeEfficiency > 0 ? s.vehicleChargeEfficiency : 1.0;
             car.trendFrom = carSOC;
             car.trendTo = MAX(carSOC, MIN(eta.targetPercent / 100, carSOC + s.chargeW * eff / s.vehicleCapacityWh));
         }
     } else {
-        car.gaugeFraction = meter ? s.chargeW / scale : -1;
+        // The gauge always means stored battery level. Unknown is not zero kW.
+        car.gaugeFraction = -1;
         car.gaugeColor = nil;
     }
     NSString *carEnergy = nil;
@@ -690,8 +711,16 @@ void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *s, NSArray<NSDictionary 
                                              : @"Bar: battery level."];
     }
     NSMutableArray *carTip = [NSMutableArray array];
-    if (carSOC >= 0) [carTip addObject:[NSString stringWithFormat:@"battery %.0f%%%@%@", carSOC * 100,
-        s.vehicleSOCIsEstimate ? @" est." : @"", s.vehicleHasReady ? (s.vehicleReady ? @" · ready" : @" · not ready") : @""]];
+    if (carSOC >= 0) {
+        NSDate *readingAt=historicalSOC ? lastAt : s.vehicleSOCAt;
+        NSString *source=historicalSOC ? lastSOC[@"source"] : s.vehicleSOCSource;
+        NSString *basis=[source containsString:@"manual"] ? @"manual" : [source containsString:@"obd"] ? @"OBD" : source.length ? @"vehicle" : @"source unspecified";
+        NSDateFormatter *clock=[NSDateFormatter new]; clock.dateFormat=@"yyyy-MM-dd HH:mm z";
+        [carTip addObject:[NSString stringWithFormat:@"%@battery %.0f%%%@ · %@%@", historicalSOC ? @"last known " : @"", carSOC*100,
+            (historicalSOC ? [lastSOC[@"estimated"] boolValue] : s.vehicleSOCIsEstimate) ? @" estimated" : @"", basis,
+            readingAt ? [@" @" stringByAppendingString:[clock stringFromDate:readingAt]] : @""]];
+        if (historicalSOC) [carTip addObject:@"Current level unknown; last reading is display only, not an ETA input"];
+    } else [carTip addObject:@"battery level unknown"];
     if (carEnergy && tot.chargeGridWh >= 50) [carTip addObject:[NSString stringWithFormat:@"%@ from the grid", EBFmtKWh(tot.chargeGridWh)]];
     if (s.sessionError.length) [carTip addObject:s.sessionError];
     if (s.vehicleError.length) [carTip addObject:s.vehicleError];
@@ -700,8 +729,8 @@ void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *s, NSArray<NSDictionary 
     [details addObject:[@"Car: " stringByAppendingString:[carTip componentsJoinedByString:@" · "]]];
     (void)carNotes;
     car.spokenDetail = carSOC >= 0
-        ? [NSString stringWithFormat:@"%@, battery %.0f%%%@", v.statusLabel, carSOC * 100, s.vehicleSOCIsEstimate ? @" estimated" : @""]
-        : v.statusLabel;
+        ? [NSString stringWithFormat:@"%@, %@battery %.0f%%%@", v.statusLabel, historicalSOC ? @"last known " : @"", carSOC * 100, s.vehicleSOCIsEstimate ? @" estimated" : @""]
+        : [v.statusLabel stringByAppendingString:@", battery level unknown"];
     car.spokenDetail = [car.spokenDetail stringByAppendingFormat:@", %@ %@", eta.label, eta.detail];
     [car reload];
 

@@ -175,6 +175,11 @@ explains the source, efficiency, unknown usable capacity/vehicle limit and taper
 A configured display target does not change the car's charging limit.
 At or above that target, the remaining-time label and marker disappear; completion
 and estimate provenance remain in Details. A valid estimate below target still shows.
+The Car gauge always represents battery level; missing SoC never substitutes a
+charging-power bar. A saved last-known level uses muted blue and the stale clock,
+with its source and timestamp in Details. It is display history only and cannot
+supply an ETA or establish a new charging anchor. With no recorded level the gauge
+is hidden; measured charging power remains in the Now column.
 
 The existing chart can extend into outlined forecast bars (12h: 8h past + 4h
 future; 48h: 36h past + 12h future). A measured solar baseline and optionally
