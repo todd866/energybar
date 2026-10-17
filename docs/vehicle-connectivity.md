@@ -1,14 +1,14 @@
 # Vehicle connectivity — API spike
 
 **Date:** 7 August 2026
-**Vehicle:** Plug-in vehicle with an Australian connected-services account
+**Scope:** Provider-neutral vehicle integration
 
 ## Finding
 
-No supported public developer API has been confirmed for the installed vehicle's
-Australian connected service. Status, state of charge (SoC), and remote commands
-are available through the manufacturer's mobile app, backed by proprietary cloud
-endpoints and a dealer-linked account.
+Manufacturer API availability varies by provider, vehicle and region. Energybar
+does not assume that a phone-app session grants a separate helper access. The
+local cache interface supports a provider only after its authentication and
+measurement-time semantics have been verified.
 
 Home Wi-Fi is not a useful telemetry source: it serves infotainment and updates,
 while connected services use the vehicle's embedded cellular modem. There is no

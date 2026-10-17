@@ -7,11 +7,11 @@ vehicle state without treating missing data as zero or an estimate as fact.
 
 ## What it shows
 
-- live PV (orange; the bar is full at the inverter's capacity, `INVERTER_KW` in `.env`), grid flow (a plain bar; the row's name and colour give the direction), and car charging power. With a known state of charge the Car bar is the pack level with a trend arrow to where it will be in an hour, as on Glancebar's battery. The grid row names the live direction: Import (red) or Export (green). With a tariff configured, its daily energy is paired with estimated cost or credit, such as `6.1 kWh · $1.83`. Hover for both directions and the live hourly cost; **⋯ → Electricity** has the rates. Tooltips are one line of figures, never a paragraph. The aligned value column fits two-digit kW readings;
-- 12-hour and 48-hour history. Solar is above the marked zero, split into car (blue), home (grey) and export (green); grid import is below, in red. Rounded axis limits share one linear scale. A hatched band is a gap in the samples, not a zero. Hover gives the power breakdown and import total, with calendar dates in the 48-hour view;
+- live PV (orange; the bar is full at the inverter's capacity, `INVERTER_KW` in `.env`), grid flow (a plain bar; the row's name and colour give the direction), and car charging power. With a known state of charge the Car bar is the pack level with a trend arrow to where it will be in an hour, as on Glancebar's battery. The grid row names the live direction: Import (red) or Export (green). With a tariff configured, its daily energy is paired with estimated cost or credit, such as `6.1 kWh · $1.83`. **⋯ → Details** shows both directions and the live hourly cost; **⋯ → Electricity** has the rates. The aligned value column fits two-digit kW readings;
+- 12-hour and 48-hour history. Solar is above the marked zero, split into car (blue), home (grey) and export (green); grid import is below, in red. Rounded axis limits share one linear scale. A hatched band is a gap in the samples, not a zero. Click a bar for its power breakdown and import total, with calendar dates in the 48-hour view;
 - Solar and Charge now as one mode control (orange for solar, green for charge now). Stop is a separate button and asks before sending a remote stop;
 - day totals with explicit partial-coverage caveats and metered shutdown recovery;
-- direct or estimated vehicle SoC with visible provenance. A direct reading can come from a local helper that writes `~/.cache/energybar/vehicle-cloud.json` (`soc`, `at`, `checkedAt`, optional `rangeKm`, `source`, `error`); it is used only while the helper checked within the last 30 minutes, and an `error` is shown rather than a number;
+- direct or estimated vehicle SoC with visible provenance. A direct reading can come from a local helper that writes `~/.cache/energybar/vehicle-cloud.json` (`soc`, `at`, `checkedAt`, optional `rangeKm`, `source`, `error`); both the measurement and check must be within the last 30 minutes, and an `error` is shown rather than a number. **⋯ → Vehicle → Vehicle cloud…** exposes cloud status even while a local estimate is available;
 - charger actions whose HTTP failures are shown instead of silently ignored.
 
 The menu-bar item is icon-only by default. Error and unknown states use distinct
@@ -52,7 +52,7 @@ crossing tariff boundaries use each applicable rate. Missing readings stay
 unpriced and incomplete energy totals carry `≥`. **Now** identifies live power in
 kW; **Today** identifies accumulated energy in kWh or net cost. A quiet divider
 separates those columns. The three instrument rows stay aligned at 30pt each.
-The Grid row's bar is always the live flow (green exporting, red importing); the day's money is one signed figure in the Today column (`−$1.04` is a net cost, `+$0.40` a net credit). Gross import cost and export credit, the live hourly cost and "partial" (incomplete history: recorded readings only, not a lower bound on the bill) are on hover and in **⋯ → Electricity**. Fixed daily supply charges, demand charges, rebates and solar self-consumption savings are excluded. This is not a full bill forecast. The optional menu-bar number includes its `kWh` unit.
+The Grid row's bar is always the live flow (green exporting, red importing); the day's money is one signed figure in the Today column (`−$1.04` is a net cost, `+$0.40` a net credit). Gross import cost and export credit, the live hourly cost and "partial" (incomplete history: recorded readings only, not a lower bound on the bill) are in **⋯ → Details** and **⋯ → Electricity**. Fixed daily supply charges, demand charges, rebates and solar self-consumption savings are excluded. This is not a full bill forecast. The optional menu-bar number includes its `kWh` unit.
 
 The footer controls the car charger. **Solar only** clears the Charge now override
 and returns to the charger's configured solar mode; it may wait for surplus and
@@ -92,6 +92,8 @@ points. No Intel component is built or launched. The build uses a Developer ID
 when one is installed. For a local-only build without one, explicitly set
 `ENERGYBAR_ADHOC=1`; ad-hoc identity can cause macOS local-network permission to
 be requested again after upgrades.
+
+For a checkout in a synced Documents directory, set `ENERGYBAR_BUILD_DIR=/tmp/energybar-build` to sign outside the file provider; the output app is then in that directory. This avoids Finder metadata being reapplied during signing.
 
 Useful diagnostics:
 
@@ -154,7 +156,7 @@ pixel diffs are a same-macOS local gate; CI runs cross-version semantic/layout
 visual checks, sanitizer suites, arm64 architecture checks, and a native bundle
 smoke test.
 
-The JSON dump schema is version 7. `gridCosts` exposes separate priced import
+The JSON dump schema is version 8. `chargingEstimate` exposes the current-rate projection and its availability reason; see [charging estimates](docs/charging-estimates.md). `gridCosts` exposes separate priced import
 and export energy, cost and credit, currency, coverage, active rates and live
 hourly amounts; unavailable costs are null. Fronius output names recovered window energy
 as a lower bound and exposes interval/device coverage; Evnex output distinguishes
@@ -162,3 +164,21 @@ current, complete, exact-register session history from stale or partial data.
 Vehicle output includes provenance, continuity state, timestamps, any unplug
 invalidation tombstone, and a nullable `persistenceError` when safety state is
 not durable.
+
+Car charging time uses the configured pack capacity, fresh SoC and Evnex car AC
+power, with a compact approximate duration above the target marker. **⋯ → Details**
+explains the source, efficiency, unknown usable capacity/vehicle limit and taper.
+A configured display target does not change the car's charging limit.
+
+The existing chart can extend into outlined forecast bars (12h: 8h past + 4h
+future; 48h: 36h past + 12h future). A measured solar baseline and optionally
+approved hourly Open-Meteo radiation support a conditional PV estimate; household
+load excludes the car. The car projection stops at the same unrounded completion
+instant as the ETA, including a partial final bar. Paused/unplugged states project
+no car charging. Missing or stale inputs leave the projection unavailable.
+See [forecast implementation](docs/forecast-implementation.md) and
+[idle site-meter findings](docs/idle-meter-data.md).
+
+The popover is prepared before opening, with animation disabled. History reads
+and forecast calculations run outside the opening action; cached content is
+shown immediately with a bounded freshness check.

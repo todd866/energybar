@@ -232,6 +232,10 @@ int main(void) {
                    @"cloud cache: fresh reading is a direct level");
             expect([cloud.statusLine containsString:@"64%"] && [cloud.statusLine containsString:@"51 km"],
                    @"cloud cache: status line names level and range");
+            [NSFileManager.defaultManager removeItemAtPath:cachePath error:nil];
+            expect(!cloud.hasSOC && cloud.dictionaryValue[@"readingAt"] == NSNull.null
+                   && cloud.dictionaryValue[@"checkedAt"] == NSNull.null,
+                   @"removed cache clears both diagnostic clocks");
             NSString *old = [iso stringFromDate:[NSDate dateWithTimeIntervalSinceNow:-7200]];
             NSData *stale = [NSJSONSerialization dataWithJSONObject:@{@"soc": @64, @"at": old, @"checkedAt": old} options:0 error:nil];
             [NSThread sleepForTimeInterval:1.1];   // a new mtime, so the provider re-reads
@@ -242,6 +246,20 @@ int main(void) {
             [err writeToFile:cachePath atomically:YES];
             expect(!cloud.available && [cloud.lastError isEqualToString:@"signed out"],
                    @"cloud cache: an error is reported, not a number");
+            NSString *future = [iso stringFromDate:[NSDate dateWithTimeIntervalSinceNow:3600]];
+            for (NSDictionary *bad in @[
+                @{@"soc":@64, @"checkedAt":now},
+                @{@"soc":@64, @"at":@"invalid", @"checkedAt":now},
+                @{@"soc":@64, @"at":old, @"checkedAt":now},
+                @{@"soc":@64, @"at":now, @"checkedAt":now, @"error":@"network error"},
+                @{@"soc":@YES, @"at":now, @"checkedAt":now},
+                @{@"soc":@64, @"at":future, @"checkedAt":future}
+            ]) {
+                [[NSJSONSerialization dataWithJSONObject:bad options:0 error:nil] writeToFile:cachePath atomically:YES];
+                EBVehicleOBDProvider *badCache = [[EBVehicleOBDProvider alloc] initWithCachePath:cachePath maxAgeSeconds:1800];
+                expect(!badCache.hasSOC, @"old/error/boolean/future cache cannot provide a charge ETA anchor");
+            }
+
         }
         expect(![obdDump[@"available"] boolValue], @"OBD dump unavailable");
         expect(![obdDump[@"estimated"] boolValue], @"OBD dump explicitly direct");

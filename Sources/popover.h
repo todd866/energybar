@@ -3,6 +3,7 @@
 #import "tiles.h"
 #import "store.h"
 #import "tariff.h"
+#import "charge_estimate.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -10,6 +11,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface EBSnapshotView : NSObject
 /// Evaluation clock for relative labels and chart bounds. Nil uses the current time at runtime.
 @property(copy, nullable) NSDate *referenceDate;
+@property(strong, nullable) EBPowerForecast *forecast;
 @property BOOL pvOK;
 @property double pvW;
 @property double eDayWh;
@@ -54,6 +56,11 @@ NS_ASSUME_NONNULL_BEGIN
 /// Usable pack (Wh) and charge efficiency, for the Car row's one-hour trend arrow; 0 = unknown.
 @property double vehicleCapacityWh;
 @property double vehicleChargeEfficiency;
+@property double vehicleChargeTargetPercent;
+@property(copy, nullable) NSDate *vehicleSOCAt;
+@property(copy, nullable) NSString *vehicleTelemetryIssue;
+/// Separate cloud status remains discoverable while a manual/inferred level is in use.
+@property(copy, nullable) NSString *vehicleCloudLine;
 /// Inverter capacity (W) from INVERTER_KW; the Solar bar's full scale. 0 = unknown.
 @property double inverterW;
 @property BOOL vehicleHasReady;
@@ -78,8 +85,10 @@ NS_ASSUME_NONNULL_BEGIN
 @property(strong) NSBox *chartDivider;
 @property(strong) NSBox *footerDivider;
 /// The energy-match verdict ("Matching solar"). Carried by colour on screen;
-/// the words are in the car row and ⋯ tooltips.
+/// the words are in the car row and Details.
 @property(copy) NSString *statusLabel;
+/// Source notes and assumptions shown by the explicit Details menu item.
+@property(copy) NSString *detailsText;
 @property(strong) EBChartLegend *legend;
 @property(strong) EBChartView *chart;
 @property(strong) NSSegmentedControl *windowSeg;
@@ -98,8 +107,14 @@ EBPopoverViews *EBBuildPopover(id _Nullable target);
 /// `samples` are raw store rows; the chart and gauges use the current window.
 void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *snap, NSArray<NSDictionary *> *samples);
 
+/// Same projection used by the popover and live diagnostic.
+EBChargeEstimate *EBChargeEstimateForSnapshot(EBSnapshotView *snap, NSArray<NSDictionary *> *samples);
+
 /// Charge-mode selection: 0 solar, 1 charge now, -1 neither (unknown or stopped).
 void EBSetChargeMode(EBPopoverViews *v, NSInteger mode);
 void EBSetCommandsEnabled(EBPopoverViews *v, BOOL enabled, BOOL canStop);
+
+/// Read-only explanation; the only optional action is the existing manual anchor editor.
+NSAlert *EBBuildVehicleCloudAlert(NSString *statusLine, NSString * _Nullable issue);
 
 NS_ASSUME_NONNULL_END

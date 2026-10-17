@@ -126,6 +126,19 @@ int main(void) {
                    detailNow, 90, &detailSupply, &detailCharge, nil) &&
                detailCharge == 0,
                @"missing OCPP charging proof cannot expose lingering car power");
+        expect(EBParseEvnexDetailMeter(
+                   detailMeter(@"2023-11-14T22:12:50.000Z", @"AVAILABLE", @-900, NSNull.null),
+                   detailNow, 90, &detailSupply, &detailCharge, nil) &&
+               detailSupply == -900 && detailCharge == 0,
+               @"unplugged car with absent car watts retains the independent fresh site CT");
+        expect(!EBParseEvnexDetailMeter(
+                   detailMeter(@"2023-11-14T22:12:50.000Z", @"CHARGING", @-900, NSNull.null),
+                   detailNow, 90, nil, nil, nil),
+               @"active missing car watts must not become zero");
+        expect(!EBParseEvnexDetailMeter(
+                   detailMeter(@"2023-11-14T22:12:50.000Z", @"AVAILABLE", NSNull.null, @0),
+                   detailNow, 90, nil, nil, nil),
+               @"unplugged missing site CT remains unknown, not zero");
 
         EBEvnexParsed *malformed = [EBEvnexParsed new];
         expect(!EBParseEvnexBundle(@{@"data": @[]}, @{@"data": @{@"supplyActivePower": NSNull.null,

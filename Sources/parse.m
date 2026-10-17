@@ -170,12 +170,18 @@ BOOL EBParseEvnexDetailMeter(NSDictionary *detailJSON,
         NSNumber *supply = EBFiniteNumber(meter[@"supplyActivePower"]);
         NSNumber *power = EBFiniteNumber(meter[@"power"]);
         NSDate *updatedAt = EBISODate(meter[@"updatedDate"]);
-        if (!supply || !power || !updatedAt) continue;
+        NSString *ocpp = EBString(connector[@"ocppStatus"]);
+        BOOL knownIdle = [@[@"AVAILABLE", @"PREPARING", @"SUSPENDED_EV",
+                            @"SUSPENDED_EVSE", @"FINISHING", @"RESERVED",
+                            @"UNAVAILABLE", @"FAULTED"] containsObject:ocpp.uppercaseString ?: @""];
+        // The site CT is independent of the car. A definite idle connector may
+        // omit its own watts while still supplying a fresh household/grid value.
+        // Unknown/charging state still requires a real car-power measurement.
+        if (!supply || !updatedAt || (!power && !knownIdle)) continue;
         if (now) {
             NSTimeInterval age = [now timeIntervalSinceDate:updatedAt];
             if (!isfinite(age) || age > maxAge || age < -60.0) continue;
         }
-        NSString *ocpp = EBString(connector[@"ocppStatus"]);
         BOOL charging = ocpp.length &&
             [ocpp caseInsensitiveCompare:@"CHARGING"] == NSOrderedSame;
         if (outSupplyW) *outSupplyW = supply.doubleValue;

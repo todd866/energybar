@@ -123,7 +123,8 @@ static NSTextField *EBLabel(NSFont *font, NSRect frame, NSTextAlignment align) {
 
 @implementation EBInstrumentRow {
     NSImageView *_symbol;
-    NSTextField *_nameL, *_valueL, *_datumL;
+    NSTextField *_nameL, *_valueL, *_datumL, *_targetL;
+    NSBox *_targetTick;
     EBGauge *_gauge;
     EBTrendArrow *_trend;
 }
@@ -132,7 +133,7 @@ static NSTextField *EBLabel(NSFont *font, NSRect frame, NSTextAlignment align) {
     if (!self) return self;
     _title = @""; _value = @"—"; _unit = @""; _symbolName = @"circle";
     _gaugeFraction = -1;
-    _trendFrom = _trendTo = -1;
+    _trendFrom = _trendTo = _targetFraction = -1;
     CGFloat datumX = EBPanelW - EBPad - EBDatumColumnW;
     CGFloat valueX = datumX - 6 - EBValueColumnW;
     CGFloat gaugeW = valueX - 4 - kGaugeX;
@@ -154,14 +155,39 @@ static NSTextField *EBLabel(NSFont *font, NSRect frame, NSTextAlignment align) {
     _trend.hidden = YES;
     // The daily money is a figure in the Today column, not a bar: a bar in the Now position
     // that showed today's net cost read as "importing" while the live flow was export.
-    // _balanceGauge stays as the model for that figure and its tooltip; it is not drawn.
+    // _balanceGauge stays as the model for that figure and its details; it is not drawn.
     for (NSView *v in @[_symbol, _nameL, _gauge, _trend, _valueL, _datumL]) [self addSubview:v];
+    _targetL = EBLabel([NSFont monospacedDigitSystemFontOfSize:10.5 weight:NSFontWeightMedium], NSZeroRect, NSTextAlignmentCenter);
+    _targetL.hidden = YES;
+    _targetTick = [NSBox new]; _targetTick.boxType = NSBoxCustom;
+    _targetTick.borderWidth = 0; _targetTick.fillColor = NSColor.secondaryLabelColor;
+    _targetTick.hidden = YES;
+    [self addSubview:_targetTick]; [self addSubview:_targetL];
     self.accessibilityElement = YES;
     self.accessibilityRole = NSAccessibilityGroupRole;
     return self;
 }
 - (BOOL)isFlipped { return YES; }
+- (NSRect)targetLabelFrame { return _targetL.frame; }
+- (CGFloat)targetMarkerX { return NSMidX(_targetTick.frame); }
 - (void)reload {
+    BOOL annotation = self.targetFraction >= 0 && self.targetFraction <= 1 && self.targetLabel.length;
+    _targetL.hidden = _targetTick.hidden = !annotation;
+    CGFloat datumX = EBPanelW - EBPad - EBDatumColumnW;
+    CGFloat valueX = datumX - 6 - EBValueColumnW;
+    CGFloat gaugeW = valueX - 4 - kGaugeX;
+    _gauge.frame = NSMakeRect(kGaugeX, annotation ? 20 : (EBRowH - kGaugeH) / 2, gaugeW, kGaugeH);
+    _trend.frame = NSInsetRect(_gauge.frame, -5, -1);
+    _valueL.frame = NSMakeRect(valueX, annotation ? 11 : (EBRowH - kValueH) / 2, EBValueColumnW, kValueH);
+    _nameL.frame = NSMakeRect(kNameX, annotation ? 12 : (EBRowH - 16) / 2, kNameW, 16);
+    if (annotation) {
+        _targetL.stringValue = self.targetLabel;
+        CGFloat width = ceil(_targetL.intrinsicContentSize.width);
+        CGFloat x = kGaugeX + gaugeW * self.targetFraction;
+        _targetL.frame = NSMakeRect(x - width / 2, -2, width, 13);
+        _targetL.textColor = NSColor.secondaryLabelColor;
+        _targetTick.frame = NSMakeRect(x - .5, 16, 1, 13);
+    }
     NSImageSymbolConfiguration *cfg = [NSImageSymbolConfiguration configurationWithPointSize:kLeadSymbol
                                                                                       weight:NSFontWeightRegular];
     _symbol.image = [[NSImage imageWithSystemSymbolName:self.symbolName accessibilityDescription:nil]
@@ -281,8 +307,8 @@ static NSTextField *EBLabel(NSFont *font, NSRect frame, NSTextAlignment align) {
     solar.segmentLabel = @"Solar only";
     charge.symbolName = @"bolt.fill";
     charge.segmentLabel = @"Charge now";
-    solar.toolTip = @"Turn off Charge now and return to the charger’s configured solar mode. It may wait for surplus; this does not start a session.";
-    charge.toolTip = @"Charge at full rate, using grid power when solar is short";
+    solar.accessibilityHelp = @"Turn off Charge now and return to the charger’s configured solar mode. It may wait for surplus; this does not start a session.";
+    charge.accessibilityHelp = @"Charge at full rate, using grid power when solar is short";
     for (EBModeSegment *b in @[solar, charge]) {
         b.bordered = NO;
         b.image = nil;

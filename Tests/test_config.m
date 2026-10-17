@@ -95,6 +95,12 @@ int main(void) {
                @"partially numeric efficiency is rejected");
         expect(invalidNumbers.obdMaxAgeSeconds == 900,
                @"non-finite cache age is rejected");
+        expect(loaded.evChargeTargetPercent == 0, @"missing target is unknown, never an imposed limit");
+        setenv("EV_CHARGE_TARGET_PERCENT", "90", 1);
+        expect(EBLoadConfig().evChargeTargetPercent == 90, @"read-only display target");
+        setenv("EV_CHARGE_TARGET_PERCENT", "101", 1);
+        expect(EBLoadConfig().evChargeTargetPercent == 0, @"invalid target remains unknown");
+        unsetenv("EV_CHARGE_TARGET_PERCENT");
         unsetenv("EV_BATTERY_KWH");
         unsetenv("EV_CHARGE_EFFICIENCY");
         unsetenv("OBD_MAX_AGE_SECONDS");

@@ -22,7 +22,7 @@ extern const CGFloat EBPanelW, EBPad, EBRowH, EBValueColumnW, EBDatumColumnW;
 
 @class EBGridBalanceGauge;
 
-/// One instrument row. Value and datum inks carry state; words live in the tooltip.
+/// One instrument row. Value and datum inks carry state; context is available in Details.
 @interface EBInstrumentRow : NSView
 /// Optional financial graphic replaces the ordinary gauge in its existing column.
 @property(nonatomic, strong, readonly) EBGridBalanceGauge *balanceGauge;
@@ -50,13 +50,18 @@ extern const CGFloat EBPanelW, EBPad, EBRowH, EBValueColumnW, EBDatumColumnW;
 /// Trend arrow riding on the gauge, from the level to where it will be in an hour
 /// (Glancebar's battery language). Negative: none.
 @property(nonatomic) double trendFrom, trendTo;
+/// Charging duration centered above its target marker, within the same row.
+@property(nonatomic) double targetFraction;
+@property(nonatomic, copy, nullable) NSString *targetLabel, *targetHelp;
+@property(nonatomic, readonly) NSRect targetLabelFrame;
+@property(nonatomic, readonly) CGFloat targetMarkerX;
 /// Spoken extras appended to the accessibility label (e.g. "estimated").
 @property(nonatomic, copy, nullable) NSString *spokenDetail;
 - (void)reload;
 @end
 
 /// One offset bar: export earnings cover import cost; the bright remainder is net.
-/// Positive net is credit; negative net is cost. Full amounts remain in the tooltip.
+/// Positive net is credit; negative net is cost. Full amounts remain in Details.
 @interface EBGridBalanceGauge : NSView
 @property(nonatomic, readonly) NSString *displayText;
 @property(nonatomic, copy) NSString *period;

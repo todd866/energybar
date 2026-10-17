@@ -5,7 +5,9 @@ cd "${0:A:h}"
 
 CC="${CC:-$(xcrun --find clang)}"
 SDKROOT="${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
-BUILD_DIR="build"
+# A non-synced output directory avoids Finder metadata being reapplied by a
+# Documents file provider while codesign is sealing a bundle.
+BUILD_DIR="${ENERGYBAR_BUILD_DIR:-build}"
 OUTPUT_APP="$BUILD_DIR/Energybar.app"
 mkdir -p "$BUILD_DIR"
 STAGING_DIR="$(mktemp -d "$BUILD_DIR/.energybar-build.XXXXXX")"
@@ -27,11 +29,15 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
     -mmacosx-version-min=13.0 \
     -arch arm64 \
     -ISources \
-    Sources/config.m Sources/tariff.m Sources/fixture.m Sources/pure.m Sources/parse.m Sources/store.m Sources/sessions.m Sources/fronius_archive.m Sources/soc.m Sources/chart.m Sources/tiles.m Sources/popover.m Sources/vehicle.m Sources/main.m \
+    Sources/config.m Sources/tariff.m Sources/fixture.m Sources/pure.m Sources/parse.m Sources/store.m Sources/sessions.m Sources/fronius_archive.m Sources/soc.m Sources/chart.m Sources/tiles.m Sources/charge_estimate.m Sources/forecast.m Sources/popover.m Sources/vehicle.m Sources/main.m \
     -framework Cocoa \
     -framework ServiceManagement \
     -o "$APP/Contents/MacOS/Energybar"
 install -m 0644 Info.plist "$APP/Contents/Info.plist"
+
+# Finder/iCloud metadata can be inherited in a Documents checkout. Strip only
+# the freshly generated bundle before signing, never the source or installed app.
+xattr -cr "$APP"
 
 # Sign: prefer ENERGYBAR_CODESIGN_IDENTITY, else ad-hoc
 if [[ -n "${ENERGYBAR_CODESIGN_IDENTITY:-}" ]]; then

@@ -1,4 +1,5 @@
 #import <Cocoa/Cocoa.h>
+#import "forecast.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -33,6 +34,9 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW);
 
 @interface EBChartView : NSView
 @property(nonatomic, copy) NSArray<NSDictionary *> *samples;
+@property(nonatomic, strong, nullable) EBPowerForecast *forecast;
+/// Hide obsolete projections immediately without I/O or rebuilding cached history.
+- (void)suppressForecast;
 @property(nonatomic) NSTimeInterval windowSeconds; // default 12h
 /// Right edge of the chart window. Nil uses the current date.
 @property(nonatomic, copy, nullable) NSDate *referenceDate;

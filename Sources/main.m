@@ -17,7 +17,7 @@
 #import "popover.h"
 #import "vehicle.h"
 
-static NSString * const EBVersion = @"0.5.1";
+static NSString * const EBVersion = @"0.5.3";
 static NSString * const EBCognitoClientId = @"rol3lsv2vg41783550i18r7vi";
 static NSString * const EBCognitoURL = @"https://cognito-idp.ap-southeast-2.amazonaws.com/";
 static NSString * const EBEvnexBase = @"https://client-api.evnex.io";
@@ -603,13 +603,21 @@ static NSColor *EBBarColor(EBBarState st, NSString *glyph) {
     return nil;
 }
 
-@interface EBApp : NSObject <NSApplicationDelegate>
+@interface EBApp : NSObject <NSApplicationDelegate, NSPopoverDelegate>
 @property EBConfig *config;
 @property EBSnapshot *snap;
 @property NSStatusItem *item;
 @property NSTimer *timer;
 @property NSPopover *popover;
 @property EBPopoverViews *views;
+@property EBSnapshotView *preparedViewModel;
+@property(copy) NSDate *presentationPreparedAt;
+@property BOOL presentationInFlight;
+@property BOOL presentationPending;
+@property(copy) NSDate *weatherNextAttemptAt;
+@property double popoverOpenStartedAt;
+@property double popoverShownMilliseconds;
+@property double popoverEventMilliseconds;
 @property EBVehicleManualProvider *vehicleManual;
 @property EBVehicleInferredProvider *vehicleInferred;
 @property EBVehicleOBDProvider *vehicleOBD;
@@ -662,6 +670,24 @@ static NSArray<NSDictionary *> *EBChartPVRows(NSArray<EBFroniusPVInterval *> *ar
     for (NSDictionary *row in live)
         if (!last || [row[@"t"] compare:last] == NSOrderedDescending) [rows addObject:row];
     return rows;
+}
+
+static EBPowerForecast *EBForecastForSnapshot(EBSnapshotView *vm, NSArray *solarRows,
+                                              NSArray *samples, NSDictionary *weather) {
+    EBPowerForecastInput *input = [EBPowerForecastInput new];
+    input.now = vm.referenceDate ?: [NSDate date];
+    input.solarSamples = solarRows; input.meterSamples = samples; input.weather = weather;
+    input.inverterW = vm.inverterW; input.chargerW = vm.chargeW;
+    input.chargerStatusAt = vm.evnexAt;
+    input.chargerState = vm.chargerOK ? EBComputeChargerState(vm.ocppStatus, vm.chargingLogic,
+        vm.chargingCurrentControl, vm.chargeNow, vm.haveOcpp) : EBChargerStateUnknown;
+    input.chargeEstimate = EBChargeEstimateForSnapshot(vm, samples);
+    return EBBuildPowerForecast(input);
+}
+
+static NSDictionary *EBForecastCache(void) {
+    NSString *path = [EBHome() stringByAppendingPathComponent:@".cache/energybar/solar-forecast.json"];
+    return EBJSONDictionary([NSData dataWithContentsOfFile:path]);
 }
 
 @implementation EBApp
@@ -756,7 +782,7 @@ static NSArray<NSDictionary *> *EBChartPVRows(NSArray<EBFroniusPVInterval *> *ar
                     self.froniusArchiveUnsupported = YES;
             }
             if (self.snap) self.snap.recoveryError = [self recoveryStorageWarning];
-            if (self.popover.shown) [self updatePopoverBody];
+            [self updatePopoverBody];
             if (self.snap) [self applyBar:self.snap];
         });
     });
@@ -809,12 +835,16 @@ static NSArray<NSDictionary *> *EBChartPVRows(NSArray<EBFroniusPVInterval *> *ar
     self.vehicle = EBResolveVehicle(@[self.vehicleOBD, self.vehicleCloud, self.vehicleLive,
                                       self.vehicleInferred, self.vehicleManual]);
     self.evnexPollInterval = EBEvnexBasePollInterval;
+    // Build the predictable next view before the status item becomes clickable.
+    [self preparePopover];
+    [NSWorkspace.sharedWorkspace.notificationCenter addObserver:self
+        selector:@selector(presentationDidWake:) name:NSWorkspaceDidWakeNotification object:nil];
     self.item = [NSStatusBar.systemStatusBar statusItemWithLength:
                  self.config.barText ? NSVariableStatusItemLength : NSSquareStatusItemLength];
     self.item.button.imagePosition = NSImageLeft;
     self.item.button.target = self;
     self.item.button.action = @selector(togglePopover:);
-    self.item.button.toolTip = @"Energybar";
+    self.item.button.accessibilityLabel = @"Energybar";
     self.item.button.font = [NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightMedium];
     [self refresh];
 }
@@ -852,7 +882,7 @@ static NSArray<NSDictionary *> *EBChartPVRows(NSArray<EBFroniusPVInterval *> *ar
     if (s.storageError.length) [tip appendFormat:@"\n%@", s.storageError];
     if (s.recoveryError.length) [tip appendFormat:@"\n%@", s.recoveryError];
     if (s.vehicleError.length) [tip appendFormat:@"\n%@", s.vehicleError];
-    self.item.button.toolTip = tip;
+    self.item.button.accessibilityLabel = [@"Energybar. " stringByAppendingString:tip];
 }
 
 - (void)refresh {
@@ -992,7 +1022,7 @@ static NSArray<NSDictionary *> *EBChartPVRows(NSArray<EBFroniusPVInterval *> *ar
             }
             [self startFroniusArchiveBackfillIfDue];
             [self applyBar:s];
-            if (self.popover.shown) [self updatePopoverBody];
+            [self updatePopoverBody];
             self.refreshInFlight = NO;
             if (self.refreshPending) {
                 self.refreshPending = NO;
@@ -1024,82 +1054,221 @@ static NSArray<NSDictionary *> *EBChartPVRows(NSArray<EBFroniusPVInterval *> *ar
         : nil;
 }
 
+- (void)preparePopover {
+    if (self.views) return;
+    self.views = EBBuildPopover(self);
+    EBSnapshotView *empty = [EBSnapshotView new];
+    empty.referenceDate = [NSDate date];
+    EBApplySnapshot(self.views, empty, @[]);
+    EBSetCommandsEnabled(self.views, NO, NO);
+    NSViewController *vc = [NSViewController new];
+    vc.view = self.views.root;
+    self.popover = [NSPopover new];
+    self.popover.behavior = NSPopoverBehaviorTransient;
+    self.popover.animates = NO;
+    self.popover.delegate = self;
+    self.popover.contentViewController = vc;
+    self.popover.contentSize = self.views.root.frame.size;
+    [self.views.root layoutSubtreeIfNeeded];
+}
+
+- (void)refreshForecastWeatherIfDue {
+    NSDate *now = [NSDate date];
+    if (self.weatherNextAttemptAt && [self.weatherNextAttemptAt compare:now] == NSOrderedDescending) return;
+    self.weatherNextAttemptAt = [now dateByAddingTimeInterval:3600];
+    NSString *settingsPath = [EBHome() stringByAppendingPathComponent:@".config/energybar/forecast.json"];
+    NSString *cachePath = [EBHome() stringByAppendingPathComponent:@".cache/energybar/solar-forecast.json"];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSURL *url = EBForecastRequestURL(EBJSONDictionary([NSData dataWithContentsOfFile:settingsPath]));
+        if (!url) return; // No permission record means no location transmission.
+        NSDictionary *cached = EBForecastCache();
+        NSISO8601DateFormatter *df = [NSISO8601DateFormatter new];
+        df.formatOptions = NSISO8601DateFormatWithInternetDateTime | NSISO8601DateFormatWithFractionalSeconds;
+        NSDate *fetched = [cached[@"fetchedAt"] isKindOfClass:NSString.class] ? [df dateFromString:cached[@"fetchedAt"]] : nil;
+        if (fetched && [now timeIntervalSinceDate:fetched] >= 0 && [now timeIntervalSinceDate:fetched] < 3600) return;
+        EBHTTPResponse *response = EBHTTP(@"GET", url.absoluteString, @{@"Accept":@"application/json"}, nil);
+        NSDictionary *document = response.successful ? EBJSONDictionary(response.data) : nil;
+        if (![document[@"hourly"] isKindOfClass:NSDictionary.class] ||
+            ![document[@"hourly_units"] isKindOfClass:NSDictionary.class]) return;
+        // Keep only forecast fields, not returned coordinates or any charger/account data.
+        NSDictionary *proof = @{@"provider":@"Open-Meteo", @"fetchedAt":EBJSONDateString([NSDate date]),
+            @"response":@{@"hourly":document[@"hourly"], @"hourly_units":document[@"hourly_units"]}};
+        NSData *data = [NSJSONSerialization dataWithJSONObject:proof options:0 error:nil];
+        dispatch_async(EBStoreQueue(), ^{
+            NSString *directory = cachePath.stringByDeletingLastPathComponent;
+            NSFileManager *fm = NSFileManager.defaultManager;
+            if (![fm createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil]) return;
+            NSString *temporary = [directory stringByAppendingPathComponent:[@".forecast-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+            if (![fm createFileAtPath:temporary contents:data attributes:@{NSFilePosixPermissions:@0600}]) return;
+            if (rename(temporary.fileSystemRepresentation, cachePath.fileSystemRepresentation) != 0) {
+                [fm removeItemAtPath:temporary error:nil]; return;
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{ [self updatePopoverBody]; });
+        });
+    });
+}
+
 - (void)updatePopoverBody {
     if (!self.views || !self.snap) return;
-    NSArray *samples = EBStoreLoad(self.config.samplesPath, EBStoreMaxAge);
-    [self resolveVehicleWithSamples:[self vehicleSamplesIncludingLive:samples]
-                         sessions:EBSessionInferenceRecords(self.snap.sessionHistory)];
-    self.snap.vehicleError = self.vehicleStorageWarning;
-    EBSnapshotView *vm = [self.snap viewModel];
+    if (self.presentationInFlight) { self.presentationPending = YES; return; }
+    self.presentationInFlight = YES;
+    self.presentationPending = NO;
+    [self refreshForecastWeatherIfDue];
+    EBSnapshot *snapshot = self.snap;
+    EBSnapshotView *vm = [snapshot viewModel];
     NSDate *now = [NSDate date];
     vm.referenceDate = now;
-    NSError *tariffError = nil;
-    self.config.tariff = EBTariffLoad(self.config.tariffPath, &tariffError);
-    self.config.tariffError = tariffError.localizedDescription;
-    vm.tariff = self.config.tariff;
-    vm.tariffError = self.config.tariffError;
-    NSCalendar *billingCalendar = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
-    billingCalendar.timeZone = vm.tariff.timeZone ?: NSTimeZone.localTimeZone;
-    NSDate *day = [billingCalendar startOfDayForDate:now];
-    vm.today = EBStoreIntegrateSince(samples, day, now);
-    vm.gridCostToday = EBTariffIntegrate(samples, day, now, vm.tariff);
-    EBFroniusPVArchiveSummary archiveDay = EBFroniusArchiveSummarizePV(
-        self.froniusArchive ?: @[], day, now);
-    vm.pvArchiveAvailable = archiveDay.hasData;
-    vm.pvArchiveWh = archiveDay.energyWh;
-    vm.pvArchiveIntervalCount = archiveDay.intervalCount;
-    NSMutableArray<NSString *> *archiveProblems = [NSMutableArray array];
-    if (self.froniusArchiveError.length) [archiveProblems addObject:self.froniusArchiveError];
-    if (self.froniusArchiveStorageWarning.length)
-        [archiveProblems addObject:self.froniusArchiveStorageWarning];
-    vm.pvArchiveError = archiveProblems.count
-        ? [archiveProblems componentsJoinedByString:@" · "] : nil;
-    NSMutableArray<NSString *> *sessionProblems = [NSMutableArray array];
-    if (vm.sessionError.length) [sessionProblems addObject:vm.sessionError];
-    if (self.sessionStorageWarning.length)
-        [sessionProblems addObject:self.sessionStorageWarning];
-    vm.sessionError = sessionProblems.count
-        ? [sessionProblems componentsJoinedByString:@" · "] : nil;
-    vm.orgId = self.config.orgId;
-    vm.vehicleLine = self.vehicle.statusLine;
-    vm.vehicleHasSOC = self.vehicle.hasSOC;
-    vm.vehicleSOC = self.vehicle.socPercent;
-    vm.vehicleHasReady = self.vehicle.hasReady;
-    vm.vehicleReady = self.vehicle.readyToCharge;
-    vm.vehicleSOCIsEstimate = self.vehicle.socIsEstimate;
-    vm.vehicleCapacityWh = self.config.evBatteryWh;
-    vm.vehicleChargeEfficiency = self.config.evChargeEfficiency;
-    vm.inverterW = self.config.inverterW;
-    vm.vehicleHasStoredState = self.vehicle.hasSOC || self.vehicle.hasReady
-        || self.vehicle.socInvalidatedAt != nil;
-    NSArray *chartRows = [samples arrayByAddingObjectsFromArray:
-        EBChartPVRows(self.froniusArchive ?: @[], self.livePV ?: @[])];
-    EBApplySnapshot(self.views, vm, chartRows);
-    if (self.popover) self.popover.contentSize = self.views.root.frame.size;
-    if (self.commandInFlight) [self setCommandControlsEnabled:NO];
+    NSString *samplesPath = self.config.samplesPath;
+    NSString *tariffPath = self.config.tariffPath;
+    NSArray *archive = self.froniusArchive ?: @[];
+    NSArray *livePV = [self.livePV copy] ?: @[];
+    // Store reads are serialized with writes; none runs on the opening action.
+    dispatch_async(EBStoreQueue(), ^{
+        NSArray *samples = EBStoreLoad(samplesPath, EBStoreMaxAge);
+        NSError *tariffError = nil;
+        EBTariff *tariff = EBTariffLoad(tariffPath, &tariffError);
+        vm.tariff = tariff;
+        vm.tariffError = tariffError.localizedDescription;
+        NSCalendar *calendar = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
+        calendar.timeZone = tariff.timeZone ?: NSTimeZone.localTimeZone;
+        NSDate *day = [calendar startOfDayForDate:now];
+        vm.today = EBStoreIntegrateSince(samples, day, now);
+        vm.gridCostToday = EBTariffIntegrate(samples, day, now, tariff);
+        EBFroniusPVArchiveSummary archiveDay = EBFroniusArchiveSummarizePV(archive, day, now);
+        vm.pvArchiveAvailable = archiveDay.hasData;
+        vm.pvArchiveWh = archiveDay.energyWh;
+        vm.pvArchiveIntervalCount = archiveDay.intervalCount;
+        NSArray *solarRows = EBChartPVRows(archive, livePV);
+        NSArray *chartRows = [samples arrayByAddingObjectsFromArray:solarRows];
+        NSDictionary *weather = EBForecastCache();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // An older completion cannot overwrite a newer status/vehicle action.
+            if (self.presentationPending || self.snap != snapshot) {
+                self.presentationInFlight = NO;
+                [self updatePopoverBody];
+                return;
+            }
+            self.config.tariff = tariff;
+            self.config.tariffError = tariffError.localizedDescription;
+            [self resolveVehicleWithSamples:[self vehicleSamplesIncludingLive:samples]
+                                 sessions:EBSessionInferenceRecords(snapshot.sessionHistory)];
+            snapshot.vehicleError = self.vehicleStorageWarning;
+            vm.vehicleError = self.vehicleStorageWarning;
+            NSMutableArray<NSString *> *archiveProblems = [NSMutableArray array];
+            if (self.froniusArchiveError.length) [archiveProblems addObject:self.froniusArchiveError];
+            if (self.froniusArchiveStorageWarning.length)
+                [archiveProblems addObject:self.froniusArchiveStorageWarning];
+            vm.pvArchiveError = archiveProblems.count
+                ? [archiveProblems componentsJoinedByString:@" · "] : nil;
+            NSMutableArray<NSString *> *sessionProblems = [NSMutableArray array];
+            if (vm.sessionError.length) [sessionProblems addObject:vm.sessionError];
+            if (self.sessionStorageWarning.length)
+                [sessionProblems addObject:self.sessionStorageWarning];
+            vm.sessionError = sessionProblems.count
+                ? [sessionProblems componentsJoinedByString:@" · "] : nil;
+            vm.orgId = self.config.orgId;
+            vm.vehicleLine = self.vehicle.statusLine;
+            vm.vehicleHasSOC = self.vehicle.hasSOC;
+            vm.vehicleSOC = self.vehicle.socPercent;
+            vm.vehicleHasReady = self.vehicle.hasReady;
+            vm.vehicleReady = self.vehicle.readyToCharge;
+            vm.vehicleSOCIsEstimate = self.vehicle.socIsEstimate;
+            vm.vehicleCapacityWh = self.config.evBatteryWh;
+            vm.vehicleChargeEfficiency = self.config.evChargeEfficiency;
+            vm.vehicleChargeTargetPercent = self.config.evChargeTargetPercent;
+            vm.vehicleSOCAt = self.vehicle.socUpdatedAt;
+            vm.vehicleCloudLine = self.vehicleCloud.statusLine;
+            vm.vehicleTelemetryIssue = !self.vehicle.hasSOC && self.vehicleCloud.lastError.length
+                ? [@"vehicle cloud: " stringByAppendingString:self.vehicleCloud.lastError] : nil;
+            vm.inverterW = self.config.inverterW;
+            vm.vehicleHasStoredState = self.vehicle.hasSOC || self.vehicle.hasReady
+                || self.vehicle.socInvalidatedAt != nil;
+            vm.referenceDate = [NSDate date];
+            dispatch_async(EBStoreQueue(), ^{
+                vm.forecast = EBForecastForSnapshot(vm, solarRows, samples, weather);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    self.presentationInFlight = NO;
+                    if (self.presentationPending || self.snap != snapshot) {
+                        [self updatePopoverBody]; return;
+                    }
+                    // AppKit stays on the main queue; the next click reuses this prepared view.
+                    self.preparedViewModel = vm;
+                    EBApplySnapshot(self.views, vm, chartRows);
+                    self.presentationPreparedAt = vm.referenceDate;
+                    self.popover.contentSize = self.views.root.frame.size;
+                    [self.views.root layoutSubtreeIfNeeded];
+                    [self setCommandControlsEnabled:!self.commandInFlight];
+                    [self expirePreparedPresentationAt:[NSDate date]];
+                });
+            });
+        });
+    });
+}
+
+- (void)expirePreparedPresentationAt:(NSDate *)now {
+    EBSnapshotView *vm = self.preparedViewModel;
+    if (!vm) return;
+    // Constant-time guard on an already-built view. No history, provider or chart work.
+    NSDate *preparedClock = vm.referenceDate;
+    vm.referenceDate = now;
+    EBChargeEstimate *eta = EBChargeEstimateForSnapshot(vm, @[]);
+    vm.referenceDate = preparedClock;
+    if (!eta.available) {
+        self.views.carRow.targetLabel = eta.label;
+        self.views.carRow.targetFraction = eta.label.length ? eta.targetPercent / 100 : -1;
+        self.views.carRow.trendFrom = self.views.carRow.trendTo = -1;
+        self.views.carRow.targetHelp = eta.detail;
+        self.views.carRow.spokenDetail = eta.detail;
+        NSMutableArray *details = [[self.views.detailsText componentsSeparatedByString:@"\n\n"] mutableCopy];
+        for (NSUInteger i = 0; i < details.count; i++)
+            if ([details[i] hasPrefix:@"Car: "]) details[i] = [@"Car: " stringByAppendingString:eta.detail];
+        self.views.detailsText = [details componentsJoinedByString:@"\n\n"];
+        [self.views.carRow reload];
+    }
+    NSTimeInterval weatherAge = vm.forecast.weatherFetchedAt ? [now timeIntervalSinceDate:vm.forecast.weatherFetchedAt] : INFINITY;
+    BOOL staleCharge = [eta.state hasPrefix:@"stale-"];
+    if (weatherAge > 7200 || weatherAge < -60 || staleCharge) [self.views.chart suppressForecast];
+    NSTimeInterval meterAge = vm.gridAsOf ? [now timeIntervalSinceDate:vm.gridAsOf] : INFINITY;
+    if (vm.gridStale || meterAge > 420 || meterAge < -60) {
+        self.views.gridRow.symbolName = @"clock.fill";
+        self.views.gridRow.valueInk = EBInkStale();
+        self.views.carRow.valueInk = EBInkSecondary();
+        [self.views.gridRow reload];
+        [self.views.carRow reload];
+    }
+}
+
+- (void)presentationDidWake:(NSNotification *)notification {
+    (void)notification;
+    [self expirePreparedPresentationAt:[NSDate date]];
+    [self updatePopoverBody];
+    [self refresh];
 }
 
 - (void)togglePopover:(id)sender {
     (void)sender;
-    if (!self.views) {
-        self.views = EBBuildPopover(self);
-        NSViewController *vc = [NSViewController new];
-        vc.view = self.views.root;
-        self.popover = [NSPopover new];
-        self.popover.behavior = NSPopoverBehaviorTransient;
-        self.popover.contentViewController = vc;
+    if (self.popover.shown) { [self.popover performClose:nil]; return; }
+    self.popoverOpenStartedAt = NSProcessInfo.processInfo.systemUptime;
+    [self expirePreparedPresentationAt:[NSDate date]];
+    [self.popover showRelativeToRect:self.item.button.bounds ofView:self.item.button preferredEdge:NSRectEdgeMinY];
+    // Background fetching may follow presentation; open never waits for it.
+    if (self.evnexPollInterval <= EBEvnexBasePollInterval &&
+        (!self.snap.evnexAt || -[self.snap.evnexAt timeIntervalSinceNow] > EBEvnexBasePollInterval)) {
+        self.evnexNextAttemptAt = nil;
+        [self refresh];
     }
-    [self updatePopoverBody];
-    if (self.popover.shown) [self.popover performClose:nil];
-    else {
-        [self.popover showRelativeToRect:self.item.button.bounds ofView:self.item.button preferredEdge:NSRectEdgeMinY];
-        // Closed, status is checked every 2 minutes; bring it up to date on open.
-        if (self.evnexPollInterval <= EBEvnexBasePollInterval &&
-            (!self.snap.evnexAt || -[self.snap.evnexAt timeIntervalSinceNow] > EBEvnexBasePollInterval)) {
-            self.evnexNextAttemptAt = nil;
-            [self refresh];
-        }
-    }
+}
+
+- (void)popoverDidShow:(NSNotification *)notification {
+    (void)notification;
+    double shown = NSProcessInfo.processInfo.systemUptime;
+    self.popoverShownMilliseconds = (shown - self.popoverOpenStartedAt) * 1000;
+    NSEvent *event = NSApp.currentEvent;
+    BOOL mouse = event && event.window == self.item.button.window &&
+        (event.type == NSEventTypeLeftMouseUp || event.type == NSEventTypeLeftMouseDown);
+    self.popoverEventMilliseconds = mouse ? (shown - event.timestamp) * 1000 : -1;
+    os_log_info(OS_LOG_DEFAULT, "Energybar presentation handler_to_shown_ms=%.3f event_to_shown_ms=%.3f",
+                self.popoverShownMilliseconds, self.popoverEventMilliseconds);
 }
 
 - (void)changeWindow:(NSSegmentedControl *)sender {
@@ -1156,6 +1325,28 @@ static NSArray<NSDictionary *> *EBChartPVRows(NSArray<EBFroniusPVInterval *> *ar
     [self.views.gearMenu popUpMenuPositioningItem:nil atLocation:p inView:sender];
 }
 
+- (void)showDetails:(id)sender {
+    (void)sender;
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = @"Energy details";
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 440, 300)];
+    scroll.hasVerticalScroller = YES;
+    scroll.borderType = NSBezelBorder;
+    NSTextView *text = [[NSTextView alloc] initWithFrame:scroll.contentView.bounds];
+    text.editable = NO;
+    text.selectable = YES;
+    text.font = [NSFont systemFontOfSize:12];
+    text.textContainerInset = NSMakeSize(8, 8);
+    text.verticallyResizable = YES;
+    text.horizontallyResizable = NO;
+    text.autoresizingMask = NSViewWidthSizable;
+    text.textContainer.widthTracksTextView = YES;
+    text.string = self.views.detailsText ?: @"Waiting for the first reading.";
+    scroll.documentView = text;
+    alert.accessoryView = scroll;
+    [alert runModal];
+}
+
 - (void)refreshNow:(id)sender {
     (void)sender;
     self.evnexPollInterval = EBEvnexBasePollInterval;
@@ -1187,6 +1378,13 @@ static NSArray<NSDictionary *> *EBChartPVRows(NSArray<EBFroniusPVInterval *> *ar
     NSPasteboard *pb = NSPasteboard.generalPasteboard;
     [pb clearContents];
     [pb setString:text forType:NSPasteboardTypeString];
+}
+
+- (void)vehicleCloudDetails:(id)sender {
+    (void)sender;
+    NSAlert *a = EBBuildVehicleCloudAlert(self.vehicleCloud.statusLine ?: @"No recent reading",
+                                        self.vehicleCloud.lastError);
+    if ([a runModal] == NSAlertSecondButtonReturn) [self vehicleSetSOC:nil];
 }
 
 - (void)vehicleSetSOC:(id)sender {
@@ -1272,14 +1470,7 @@ static NSArray<NSDictionary *> *EBChartPVRows(NSArray<EBFroniusPVInterval *> *ar
 }
 
 - (void)refreshVehiclePresentation {
-    if (self.popover.shown) {
-        [self updatePopoverBody];
-    } else {
-        NSArray *samples = EBStoreLoad(self.config.samplesPath, EBStoreMaxAge);
-        [self resolveVehicleWithSamples:[self vehicleSamplesIncludingLive:samples]
-                             sessions:EBSessionInferenceRecords(self.snap.sessionHistory)];
-        self.snap.vehicleError = self.vehicleStorageWarning;
-    }
+    [self updatePopoverBody];
     if (self.snap) [self applyBar:self.snap];
 }
 
@@ -1408,7 +1599,45 @@ static NSArray<NSDictionary *> *EBChartPVRows(NSArray<EBFroniusPVInterval *> *ar
 
 #pragma mark - CLI
 
-static int EBDump(BOOL jsonMode) {
+// Opt-in diagnostic render of the same live view model, without showing a window.
+static BOOL EBRenderLive(EBSnapshotView *snapshot, NSArray *samples, NSString *prefix) {
+    [NSApplication sharedApplication].activationPolicy = NSApplicationActivationPolicyProhibited;
+    for (NSNumber *dark in @[@NO, @YES]) {
+        NSAppearance *appearance = [NSAppearance appearanceNamed:dark.boolValue ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+        __block NSData *png = nil;
+        [appearance performAsCurrentDrawingAppearance:^{
+            EBPopoverViews *views = EBBuildPopover(nil);
+            views.root.appearance = appearance;
+            EBApplySnapshot(views, snapshot, samples);
+            NSView *root = views.root;
+            [root layoutSubtreeIfNeeded];
+            NSWindow *window = [[NSWindow alloc] initWithContentRect:root.frame styleMask:NSWindowStyleMaskBorderless
+                backing:NSBackingStoreBuffered defer:NO];
+            window.appearance = appearance;
+            window.contentView = root;
+            root.wantsLayer = YES;
+            root.layer.backgroundColor = NSColor.windowBackgroundColor.CGColor;
+            [root layoutSubtreeIfNeeded];
+            NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
+                pixelsWide:(NSInteger)ceil(NSWidth(root.bounds) * 2) pixelsHigh:(NSInteger)ceil(NSHeight(root.bounds) * 2)
+                bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:0 bitsPerPixel:0];
+            rep.size = root.bounds.size;
+            NSGraphicsContext *context = [NSGraphicsContext graphicsContextWithBitmapImageRep:rep];
+            [NSGraphicsContext saveGraphicsState];
+            NSGraphicsContext.currentContext = context;
+            [root displayRectIgnoringOpacity:root.bounds inContext:context];
+            [context flushGraphics];
+            [NSGraphicsContext restoreGraphicsState];
+            png = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+            [window orderOut:nil];
+        }];
+        NSString *path = [prefix stringByAppendingFormat:@"-%@.png", dark.boolValue ? @"dark" : @"light"];
+        if (!png || ![png writeToFile:path atomically:YES]) return NO;
+    }
+    return YES;
+}
+
+static int EBDump(BOOL jsonMode, NSString *renderPrefix) {
     EBConfig *c = EBLoadConfig();
     EBSnapshot *s = EBFetch(c, YES);
     NSString *vehicleManualPath = [EBHome()
@@ -1460,6 +1689,46 @@ static int EBDump(BOOL jsonMode) {
         ? [vehicleProblems componentsJoinedByString:@" · "] : nil;
     NSMutableDictionary *vehicleJSON = [vehicle.dictionaryValue mutableCopy];
     vehicleJSON[@"persistenceError"] = vehiclePersistenceError ?: NSNull.null;
+    EBSnapshotView *estimateView = [s viewModel];
+    estimateView.referenceDate = dumpNow;
+    estimateView.vehicleHasSOC = vehicle.hasSOC; estimateView.vehicleSOC = vehicle.socPercent;
+    estimateView.vehicleSOCIsEstimate = vehicle.socIsEstimate;
+    estimateView.vehicleSOCAt = vehicle.socUpdatedAt;
+    estimateView.vehicleCapacityWh = c.evBatteryWh; estimateView.vehicleChargeEfficiency = c.evChargeEfficiency;
+    estimateView.vehicleChargeTargetPercent = c.evChargeTargetPercent;
+    estimateView.vehicleTelemetryIssue = !vehicle.hasSOC && cloud.lastError.length
+        ? [@"vehicle cloud: " stringByAppendingString:cloud.lastError] : nil;
+    estimateView.orgId = c.orgId;
+    estimateView.vehicleLine = vehicle.statusLine;
+    estimateView.vehicleCloudLine = cloud.statusLine;
+    estimateView.vehicleHasReady = vehicle.hasReady; estimateView.vehicleReady = vehicle.readyToCharge;
+    estimateView.vehicleHasStoredState = vehicle.hasSOC || vehicle.hasReady || vehicle.socInvalidatedAt != nil;
+    estimateView.inverterW = c.inverterW; estimateView.tariff = c.tariff; estimateView.tariffError = c.tariffError;
+    estimateView.gridCostToday = gridCosts; estimateView.today = EBStoreIntegrateSince(samples, dumpDay, dumpNow);
+    estimateView.pvArchiveAvailable = archiveDay.hasData; estimateView.pvArchiveWh = archiveDay.energyWh;
+    estimateView.pvArchiveIntervalCount = archiveDay.intervalCount;
+    NSArray *dumpLivePV = s.pvOK && s.pvAt ? @[@{@"t":s.pvAt,@"pvW":@(s.pvW)}] : @[];
+    estimateView.forecast = EBForecastForSnapshot(estimateView,
+        EBChartPVRows(archiveIntervals ?: @[], dumpLivePV), samples, EBForecastCache());
+    if (renderPrefix.length && !EBRenderLive(estimateView,
+        [samples arrayByAddingObjectsFromArray:EBChartPVRows(archiveIntervals ?: @[], dumpLivePV)], renderPrefix)) {
+        fprintf(stderr, "Live render failed\n"); return 2;
+    }
+    EBChargeEstimate *chargeEstimate = EBChargeEstimateForSnapshot(estimateView, samples);
+    vehicleJSON[@"configuredCapacityWh"] = @(c.evBatteryWh);
+    vehicleJSON[@"chargeEfficiency"] = @(c.evChargeEfficiency);
+    vehicleJSON[@"cloudError"] = cloud.lastError ?: NSNull.null;
+    NSMutableDictionary *completionBar = [NSMutableDictionary dictionary];
+    NSMutableDictionary *afterCompletionBar = [NSMutableDictionary dictionary];
+    if (estimateView.forecast.carFinishesAt) {
+        double elapsed = [estimateView.forecast.carFinishesAt timeIntervalSinceDate:estimateView.forecast.asOf];
+        NSDate *a = [estimateView.forecast.asOf dateByAddingTimeInterval:floor(elapsed/900)*900];
+        NSDate *b = [a dateByAddingTimeInterval:900];
+        NSDictionary *last = EBForecastAverage(estimateView.forecast.rows, a, b);
+        NSDictionary *next = EBForecastAverage(estimateView.forecast.rows, b, [b dateByAddingTimeInterval:900]);
+        if (last) { [completionBar addEntriesFromDictionary:last]; completionBar[@"start"] = EBJSONDateString(a); completionBar[@"end"] = EBJSONDateString(b); }
+        if (next) { [afterCompletionBar addEntriesFromDictionary:next]; afterCompletionBar[@"start"] = EBJSONDateString(b); }
+    }
     if (jsonMode) {
         NSDate *sessionDay = EBStartOfLocalDay([NSDate date]);
         NSDate *sessionThrough = s.sessionHistory.fetchedAt;
@@ -1468,7 +1737,18 @@ static int EBDump(BOOL jsonMode) {
         BOOL sessionDayAvailable = s.sessionHistory.complete && sessionThrough &&
             [sessionThrough compare:sessionDay] != NSOrderedAscending && sessionDayTotal.exact;
         NSDictionary *out = @{
-            @"schemaVersion": @7,
+            @"schemaVersion": @8,
+            @"chargingEstimate": chargeEstimate.dictionaryValue,
+            @"forecast": @{
+                @"available": @(estimateView.forecast.available),
+                @"detail": estimateView.forecast.detail ?: @"",
+                @"asOf": EBJSONDateString(estimateView.forecast.asOf) ?: NSNull.null,
+                @"weatherFetchedAt": EBJSONDateString(estimateView.forecast.weatherFetchedAt) ?: NSNull.null,
+                @"carFinishesAt": EBJSONDateString(estimateView.forecast.carFinishesAt) ?: NSNull.null,
+                @"intervalCount": @(estimateView.forecast.rows.count),
+                @"completionBar": completionBar,
+                @"afterCompletionBar": afterCompletionBar,
+            },
             @"version": EBVersion,
             @"glance": EBGlanceString(s.pvOK, s.pvW, s.gridOK, s.supplyW, s.chargerOK,
                                       s.ocppStatus, s.chargingLogic, s.chargingCurrentControl, s.chargeNow),
@@ -1588,6 +1868,7 @@ static int EBDump(BOOL jsonMode) {
                carDay.UTF8String,
                (cNote && ![cNote isEqualToString:@"no data"]) ? [[NSString stringWithFormat:@" (%@)", cNote] UTF8String] : "");
         printf("Vehicle  %s\n", vehicle.statusLine.UTF8String);
+        printf("Charge ETA  %s %s\n", chargeEstimate.label.UTF8String, chargeEstimate.detail.UTF8String);
         if (c.tariff && gridCosts.coverage > 0) {
             printf("Energy   import %.2f %s cost / export %.2f %s credit (recorded estimate; supply charges excluded)\n",
                    gridCosts.importCost, c.tariff.currency.UTF8String,
@@ -1674,6 +1955,7 @@ int main(int argc, const char *argv[]) {
                  "  (no args)              run menu bar app (icon-only)\n"
                  "  --dump                 human snapshot\n"
                  "  --dump --json          JSON snapshot\n"
+                 "  --dump --render PATH   also save PATH-light.png and PATH-dark.png offscreen\n"
                  "  --refresh-fixtures     write sanitized build/fixture-preview files\n"
                  "  --refresh-fixtures --accept-fixtures  replace tracked sanitized fixtures\n"
                  "  --register-login       enable Launch at Login (SMAppService)\n"
@@ -1708,7 +1990,15 @@ int main(int argc, const char *argv[]) {
             return EBRefreshFixtures([args containsObject:@"--accept-fixtures"]);
         }
         if ([args containsObject:@"--dump"]) {
-            return EBDump([args containsObject:@"--json"]);
+            NSString *prefix = nil;
+            NSUInteger render = [args indexOfObject:@"--render"];
+            if (render != NSNotFound) {
+                if (render + 1 >= args.count || [args[render + 1] hasPrefix:@"--"]) {
+                    fputs("--render requires a file prefix\n", stderr); return 2;
+                }
+                prefix = args[render + 1];
+            }
+            return EBDump([args containsObject:@"--json"], prefix);
         }
         NSApplication *app = NSApplication.sharedApplication;
         app.activationPolicy = NSApplicationActivationPolicyAccessory;

@@ -151,8 +151,6 @@ EBPopoverViews *EBBuildPopover(id target) {
         caption.accessibilityElement = NO;
     }
     v.nowCaption.alignment = NSTextAlignmentRight;
-    v.nowCaption.toolTip = @"kW now";
-    v.todayCaption.toolTip = @"Since midnight";
     v.totalsDivider = EBDivider();
     v.chartDivider = EBDivider();
     v.footerDivider = EBDivider();
@@ -165,7 +163,7 @@ EBPopoverViews *EBBuildPopover(id target) {
     v.windowSeg.controlSize = NSControlSizeSmall;
     v.windowSeg.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
     v.windowSeg.selectedSegment = 0;
-    v.windowSeg.toolTip = @"History window";
+    v.windowSeg.accessibilityLabel = @"History window";
     [v.windowSeg sizeToFit];
     v.chart = [[EBChartView alloc] initWithFrame:NSMakeRect(0, 0, EBPanelW - 2 * EBPad, kChartH)];
 
@@ -174,8 +172,6 @@ EBPopoverViews *EBBuildPopover(id target) {
                                              chargeAction:@selector(doChargeNow:)];
     v.solarButton = v.modeControl.solarButton;
     v.chargeNowButton = v.modeControl.chargeNowButton;
-    v.solarButton.toolTip = @"Charge from surplus solar";
-    v.chargeNowButton.toolTip = @"Full rate, grid when solar is short";
     v.stopButton = [NSButton buttonWithTitle:@"Stop" target:target action:@selector(doStop:)];
     v.stopButton.bezelStyle = NSBezelStyleRounded;
     v.stopButton.bordered = YES;
@@ -208,6 +204,7 @@ EBPopoverViews *EBBuildPopover(id target) {
 
     // ⋯ menu (built once; target handles actions). Vehicle submenu is refreshed in EBApplySnapshot.
     v.gearMenu = [NSMenu new];
+    [v.gearMenu addItemWithTitle:@"Details…" action:@selector(showDetails:) keyEquivalent:@""];
     [v.gearMenu addItemWithTitle:@"Refresh now" action:@selector(refreshNow:) keyEquivalent:@""];
     [v.gearMenu addItemWithTitle:@"Open samples folder" action:@selector(openSamples:) keyEquivalent:@""];
     [v.gearMenu addItemWithTitle:@"Copy diagnostics" action:@selector(copyDiagnostics:) keyEquivalent:@""];
@@ -276,7 +273,7 @@ static NSString *EBBalanceMoney(double amount, EBTariff *tariff, NSString *sign,
     NSString *money = [sign stringByAppendingString:EBMoney(amount, tariff)];
     NSFont *font = EBDatumFont();
     if (EBTextFits([money stringByAppendingString:suffix], font, EBDatumColumnW)) return money;
-    // Exceptional amounts keep one-line geometry; the tooltip retains cents.
+    // Exceptional amounts keep one-line geometry; Details retains cents.
     // Never turn an ordinary charge into a misleading rounded "$0k".
     if (amount < 1000) return @"…";
     double scale = amount >= 1e9 ? 1e9 : (amount >= 1e6 ? 1e6 : 1e3);
@@ -332,8 +329,23 @@ static double EBGaugeScale(NSArray<NSDictionary *> *samples, NSDate *since, EBSn
     return peak;
 }
 
+EBChargeEstimate *EBChargeEstimateForSnapshot(EBSnapshotView *s, NSArray<NSDictionary *> *samples) {
+    EBChargeInput *i = [EBChargeInput new];
+    i.now = s.referenceDate ?: [NSDate date];
+    i.hasSOC = s.vehicleHasSOC; i.soc = s.vehicleSOC; i.socEstimated = s.vehicleSOCIsEstimate;
+    i.socAt = s.vehicleSOCAt; i.capacityWh = s.vehicleCapacityWh; i.efficiency = s.vehicleChargeEfficiency;
+    i.targetPercent = s.vehicleChargeTargetPercent;
+    i.state = s.chargerOK ? EBComputeChargerState(s.ocppStatus, s.chargingLogic,
+        s.chargingCurrentControl, s.chargeNow, s.haveOcpp) : EBChargerStateUnknown;
+    i.statusAt = s.evnexAt; i.meterAt = s.gridAsOf;
+    i.meterAvailable = s.gridOK; i.meterStale = s.gridStale; i.wallW = s.chargeW;
+    i.vehicleIssue = s.vehicleTelemetryIssue;
+    return EBEstimateCharge(i, samples);
+}
+
 void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *s, NSArray<NSDictionary *> *samples) {
     if (!v || !s) return;
+    NSMutableArray<NSString *> *details = [NSMutableArray array];
     NSDate *referenceDate = s.referenceDate ?: [NSDate date];
     EBDayTotals tot = s.today;
     NSColor *orange = EBDyn(^{ return EBColorSurplus(); });
@@ -345,7 +357,7 @@ void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *s, NSArray<NSDictionary 
     double scale = EBGaugeScale(samples ?: @[], [referenceDate dateByAddingTimeInterval:-12 * 3600], s);
     BOOL meter = s.gridOK || s.gridStale;
 
-    // Verdict, computed as before; it drives colour and tooltips, not a header.
+    // Verdict, computed as before; it drives colour and details, not a header.
     EBMatchState match;
     if (s.gridStale || (!s.gridOK && s.chargerOK))
         match = EBMatchUnknown;
@@ -370,7 +382,7 @@ void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *s, NSArray<NSDictionary 
     else if (s.storageError.length) { fault = @"History not saved"; faultTip = s.storageError; }
     v.faultRow.hidden = fault == nil;
     v.faultLabel.stringValue = fault ?: @"";
-    v.faultRow.toolTip = faultTip;
+    if (faultTip.length) [details addObject:faultTip];
     v.faultRow.accessibilityLabel = fault;
 
     // Solar
@@ -415,12 +427,12 @@ void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *s, NSArray<NSDictionary 
         [solarNotes addObject:@"Fronius supplied exact archived solar-energy intervals, which can include periods when Energybar was closed. Boundary intervals are omitted from the displayed lower bound."];
     if (s.pvArchiveError.length) [solarNotes addObject:s.pvArchiveError];
     if (s.pvAt) [solarNotes addObject:[NSString stringWithFormat:@"Fronius read %@", EBTimeHM(s.pvAt)]];
-    // Tooltips are terse: figures the row doesn't show, errors, nothing else.
+    // Details retain: figures the row doesn't show, errors, nothing else.
     NSMutableArray *solTip = [NSMutableArray array];
     if (s.pvError.length) [solTip addObject:s.pvError];
     if (s.pvArchiveError.length) [solTip addObject:s.pvArchiveError];
     if ([sol.subline hasPrefix:@"≥"]) [solTip addObject:@"partial day: a lower bound"];
-    sol.toolTip = solTip.count ? [solTip componentsJoinedByString:@" · "] : nil;
+    if (solTip.count) [details addObject:[@"Solar: " stringByAppendingString:[solTip componentsJoinedByString:@" · "]]];
     (void)solarNotes;
     [sol reload];
 
@@ -479,7 +491,7 @@ void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *s, NSArray<NSDictionary 
     balance.hidden = !s.tariff && !s.tariffError.length;
     if (!balance.hidden) {
         // Finance replaces the daily energy label, but must not hide the live
-        // meter's stale/offline status from the spoken row or its tooltip.
+        // meter's stale/offline status from the spoken row or Details.
         grid.spokenDetail = s.gridStale || !meter ? grid.subline : nil;
         if (grid.spokenDetail.length) [gridNotes addObject:grid.spokenDetail];
     }
@@ -580,8 +592,7 @@ void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *s, NSArray<NSDictionary 
     if (s.gridStale) [gridTip addObject:@"stale"];
     if (s.evnexError.length) [gridTip addObject:s.evnexError];
     if (s.tariffError.length) [gridTip addObject:@"tariff unavailable"];
-    grid.toolTip = [gridTip componentsJoinedByString:@" · "];
-    balance.toolTip = grid.toolTip;
+    [details addObject:[@"Grid: " stringByAppendingString:[gridTip componentsJoinedByString:@" · "]]];
     (void)gridNotes; (void)balanceNotes;
     balance.accessibilityLabel = [balanceSpoken componentsJoinedByString:@". "];
     [balance reload];
@@ -621,15 +632,19 @@ void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *s, NSArray<NSDictionary 
     // Quantity plus flow, as Glancebar's battery: with a known state of charge the bar is the
     // pack and a trend arrow rides on it to where it will be in an hour at this charging rate.
     double carSOC = s.vehicleHasSOC ? MIN(100, MAX(0, s.vehicleSOC)) / 100.0 : -1;
+    EBChargeEstimate *eta = EBChargeEstimateForSnapshot(s, samples);
+    car.targetFraction = carSOC >= 0 && eta.label.length ? eta.targetPercent / 100 : -1;
+    car.targetLabel = eta.label;
+    car.targetHelp = eta.detail;
     car.trendFrom = car.trendTo = -1;
     if (carSOC >= 0) {
-        NSColor *packInk = carSOC >= 0.5 ? green : (carSOC >= 0.2 ? amber : red);
+        NSColor *packInk = blue;
         car.gaugeFraction = carSOC;
         car.gaugeColor = s.vehicleSOCIsEstimate ? [packInk colorWithAlphaComponent:0.5] : packInk;
-        if (charging && s.vehicleCapacityWh > 0) {
+        if (charging && eta.available && s.vehicleCapacityWh > 0) {
             double eff = s.vehicleChargeEfficiency > 0 ? s.vehicleChargeEfficiency : 1.0;
             car.trendFrom = carSOC;
-            car.trendTo = MIN(1.0, carSOC + s.chargeW * eff / s.vehicleCapacityWh);
+            car.trendTo = MAX(carSOC, MIN(eta.targetPercent / 100, carSOC + s.chargeW * eff / s.vehicleCapacityWh));
         }
     } else {
         car.gaugeFraction = meter ? s.chargeW / scale : -1;
@@ -679,11 +694,14 @@ void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *s, NSArray<NSDictionary 
     if (carEnergy && tot.chargeGridWh >= 50) [carTip addObject:[NSString stringWithFormat:@"%@ from the grid", EBFmtKWh(tot.chargeGridWh)]];
     if (s.sessionError.length) [carTip addObject:s.sessionError];
     if (s.vehicleError.length) [carTip addObject:s.vehicleError];
-    car.toolTip = carTip.count ? [carTip componentsJoinedByString:@" · "] : nil;
+    // The compact marker is explained on request, never by a delayed hover.
+    [carTip addObject:eta.detail];
+    [details addObject:[@"Car: " stringByAppendingString:[carTip componentsJoinedByString:@" · "]]];
     (void)carNotes;
     car.spokenDetail = carSOC >= 0
         ? [NSString stringWithFormat:@"%@, battery %.0f%%%@", v.statusLabel, carSOC * 100, s.vehicleSOCIsEstimate ? @" estimated" : @""]
         : v.statusLabel;
+    car.spokenDetail = [car.spokenDetail stringByAppendingFormat:@", %@ %@", eta.label, eta.detail];
     [car reload];
 
     // Car battery: only when vehicle state is known.
@@ -710,7 +728,7 @@ void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *s, NSArray<NSDictionary 
     NSMutableArray *batNotes = [NSMutableArray array];
     if (s.vehicleLine.length) [batNotes addObject:s.vehicleLine];
     if (s.vehicleError.length) [batNotes addObject:s.vehicleError];
-    bat.toolTip = batNotes.count ? [batNotes componentsJoinedByString:@"\n"] : nil;
+    if (batNotes.count) [details addObject:[batNotes componentsJoinedByString:@"\n"]];
     [bat reload];
 
     // Footer
@@ -721,12 +739,18 @@ void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *s, NSArray<NSDictionary 
              cs == EBChargerStateUnplugged) EBSetChargeMode(v, 0);
     else EBSetChargeMode(v, -1);
     v.stopButton.enabled = s.orgId.length > 0;
-    v.stopButton.toolTip = s.orgId.length ? @"Stop charging now" : @"Organisation ID not yet known";
+    v.stopButton.accessibilityHelp = s.orgId.length ? nil : @"Organisation ID not yet known";
+    if (!s.orgId.length) [details addObject:@"Stop unavailable: organisation ID not yet known."];
     NSString *checked = [NSString stringWithFormat:@"Checked: Fronius %@ · Evnex %@",
                          EBTimeHM(s.pvAt) ?: @"—", EBTimeHM(s.evnexAt) ?: @"—"];
-    v.moreButton.toolTip = [NSString stringWithFormat:@"Refresh, vehicle, settings and Quit\n%@\n%@",
-                            v.statusLabel, checked];
+    [details addObject:checked];
+    [details addObject:@"Solar only returns to the configured solar mode and may wait for surplus. Charge now can use grid power. These buttons control the charger; viewing Details does not."];
+    v.detailsText = [details componentsJoinedByString:@"\n\n"];
+    v.moreButton.accessibilityLabel = @"More — details, refresh, vehicle and settings";
 
+    if (s.forecast.detail.length) [details addObject:s.forecast.detail];
+    v.detailsText = [details componentsJoinedByString:@"\n\n"];
+    v.chart.forecast = s.forecast;
     v.chart.referenceDate = referenceDate;
     NSDate *since = [referenceDate dateByAddingTimeInterval:-win];
     NSMutableArray *windowRows = [NSMutableArray array];
@@ -746,6 +770,13 @@ void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *s, NSArray<NSDictionary 
         NSMenuItem *status = [[NSMenuItem alloc] initWithTitle:line action:nil keyEquivalent:@""];
         status.enabled = NO;
         [sub addItem:status];
+        if (s.vehicleCloudLine.length) {
+            NSMenuItem *cloud = [[NSMenuItem alloc] initWithTitle:@"Vehicle cloud…"
+                                                         action:@selector(vehicleCloudDetails:)
+                                                  keyEquivalent:@""];
+            cloud.toolTip = s.vehicleCloudLine;
+            [sub addItem:cloud];
+        }
         if (s.vehicleError.length) {
             NSMenuItem *storage = [[NSMenuItem alloc] initWithTitle:s.vehicleError
                                                             action:nil
@@ -778,4 +809,19 @@ void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *s, NSArray<NSDictionary 
     }
 
     [v.root layoutSubtreeIfNeeded];
+}
+
+NSAlert *EBBuildVehicleCloudAlert(NSString *statusLine, NSString *issue) {
+    NSAlert *a = [NSAlert new];
+    a.messageText = @"Vehicle cloud";
+    a.icon = [NSImage imageWithSystemSymbolName:@"cloud" accessibilityDescription:nil];
+    NSString *note;
+    if ([issue isEqualToString:@"signed out"] || [issue isEqualToString:@"not linked"])
+        note = @"This Mac's session is separate from your phone. Automatic reconnection is not available. Use a fresh reading from the manufacturer app to set battery %.";
+    else
+        note = @"Only the car's measurement time establishes freshness. Checking again cannot make an old reading current. A fresh reading from the manufacturer app can be used as a temporary battery anchor.";
+    a.informativeText = [NSString stringWithFormat:@"%@\n\n%@", statusLine, note];
+    [a addButtonWithTitle:@"Close"];
+    [a addButtonWithTitle:@"Set battery %…"];
+    return a;
 }

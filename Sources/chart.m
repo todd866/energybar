@@ -124,6 +124,7 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
     double _upMax, _downMax, _step;
     NSRect _plot;
     CGFloat _zeroY;
+    BOOL _forecastSuppressed;
 }
 
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -131,7 +132,8 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
     if (self) {
         _windowSeconds = 12 * 3600;
         self.accessibilityElement = YES;
-        self.accessibilityRole = NSAccessibilityImageRole;
+        self.accessibilityRole = NSAccessibilityButtonRole;
+        self.accessibilityHelp = @"Click an interval for its power readings. VoiceOver press opens the latest interval.";
     }
     return self;
 }
@@ -139,6 +141,16 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
 - (void)dealloc { free(_bars); }
 
 - (BOOL)isFlipped { return NO; }
+
+- (void)setForecast:(EBPowerForecast *)forecast {
+    _forecast = forecast; _forecastSuppressed = NO; [self rebuild];
+}
+- (void)suppressForecast { _forecastSuppressed = YES; self.needsDisplay = YES; }
+- (BOOL)hasForecast { return self.forecast.available && self.forecast.rows.count > 0; }
+- (NSDate *)displayEnd {
+    NSDate *now = self.referenceDate ?: [NSDate date];
+    return [self hasForecast] ? [now dateByAddingTimeInterval:self.windowSeconds > 24*3600 ? 12*3600 : 4*3600] : now;
+}
 
 - (void)setSamples:(NSArray<NSDictionary *> *)samples {
     _samples = [samples copy];
@@ -178,7 +190,7 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
     [self removeAllToolTips];
     _upMax = _downMax = 0;
     if (!_bars) { _nBars = 0; return; }
-    NSDate *now = self.referenceDate ?: [NSDate date];
+    NSDate *now = [self displayEnd];
     NSDate *start = [now dateByAddingTimeInterval:-self.windowSeconds];
     NSTimeInterval barSec = self.windowSeconds / _nBars;
     NSMutableArray<NSMutableArray *> *rows = [NSMutableArray arrayWithCapacity:(NSUInteger)_nBars];
@@ -204,6 +216,19 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
         _upMax = fmax(_upMax, bar->carSolar + bar->homeSolar + bar->export_);
         _downMax = fmax(_downMax, bar->carGrid + bar->homeGrid);
     }
+    if ([self hasForecast]) for (NSInteger i = 0; i < _nBars; i++) {
+        NSDate *a = [start dateByAddingTimeInterval:i * barSec];
+        NSDate *b = [a dateByAddingTimeInterval:barSec];
+        if ([a compare:self.referenceDate] == NSOrderedAscending) continue;
+        NSDictionary *v = EBForecastAverage(self.forecast.rows, a, b);
+        if (!v) continue;
+        EBBar *bar = &_bars[i]; bar->known = YES;
+        bar->carSolar = [v[@"carSolarW"] doubleValue]; bar->homeSolar = [v[@"homeSolarW"] doubleValue];
+        bar->export_ = [v[@"exportW"] doubleValue]; bar->carGrid = [v[@"carGridW"] doubleValue];
+        bar->homeGrid = [v[@"homeGridW"] doubleValue]; bar->solar = [v[@"pvW"] doubleValue];
+        _upMax = fmax(_upMax, bar->carSolar + bar->homeSolar + bar->export_);
+        _downMax = fmax(_downMax, bar->carGrid + bar->homeGrid);
+    }
     EBChartScale scale = EBChartMakeScale(_upMax, _downMax);
     _upMax = scale.solarW;
     _downMax = scale.importW;
@@ -217,20 +242,12 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
         ? [NSString stringWithFormat:@"%.0f-hour power history. Solar above zero, grid import below zero. Shared scale: %.1f kW solar to minus %.1f kW import. Hatched areas have no data.",
            self.windowSeconds / 3600, _upMax / 1000, _downMax / 1000]
         : @"No power history yet";
-    CGFloat slot = _plot.size.width / _nBars;
-    for (NSInteger i = 0; i < _nBars; i++) {
-        if (!_bars[i].known && !anyKnown) continue;
-        [self addToolTipRect:NSMakeRect(_plot.origin.x + i * slot, _plot.origin.y, slot, _plot.size.height)
-                       owner:self userData:(void *)(intptr_t)i];
-    }
     self.needsDisplay = YES;
 }
 
-- (NSString *)view:(NSView *)view stringForToolTip:(NSToolTipTag)tag point:(NSPoint)point userData:(void *)data {
-    (void)view; (void)tag; (void)point;
-    NSInteger i = (NSInteger)(intptr_t)data;
+- (NSString *)detailsForBar:(NSInteger)i {
     if (i < 0 || i >= _nBars) return nil;
-    NSDate *now = self.referenceDate ?: [NSDate date];
+    NSDate *now = [self displayEnd];
     NSDate *start = [now dateByAddingTimeInterval:-self.windowSeconds];
     NSTimeInterval barSec = self.windowSeconds / _nBars;
     NSDateFormatter *df = [NSDateFormatter new];
@@ -238,6 +255,9 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
     NSString *span = [NSString stringWithFormat:@"%@–%@",
                       [df stringFromDate:[start dateByAddingTimeInterval:i * barSec]],
                       [df stringFromDate:[start dateByAddingTimeInterval:(i + 1) * barSec]]];
+    NSDate *barStart = [start dateByAddingTimeInterval:i * barSec];
+    BOOL projected = [self hasForecast] && [barStart compare:self.referenceDate] != NSOrderedAscending;
+    if (projected && _forecastSuppressed) return @"Forecast unavailable · readings expired";
     if (!_bars[i].known) return [NSString stringWithFormat:@"%@\nno data", span];
     EBBar b = _bars[i];
     NSMutableArray *lines = [NSMutableArray arrayWithObjects:span, @"Average power · kW", nil];
@@ -248,7 +268,36 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
                       (b.homeSolar + b.homeGrid) / 1000, b.homeSolar / 1000, b.homeGrid / 1000]];
     [lines addObject:[NSString stringWithFormat:@"Export %.1f kW", b.export_ / 1000]];
     [lines addObject:[NSString stringWithFormat:@"Import %.1f kW", (b.carGrid + b.homeGrid) / 1000]];
+    if (projected) {
+        [lines insertObject:@"Forecast · conditional on current charging rate" atIndex:0];
+        NSDictionary *r = EBForecastAverage(self.forecast.rows, barStart, [barStart dateByAddingTimeInterval:barSec]);
+        [lines addObject:[NSString stringWithFormat:@"Solar scenario range %.1f–%.1f kW", [r[@"pvLowW"] doubleValue]/1000, [r[@"pvHighW"] doubleValue]/1000]];
+        if (self.forecast.carFinishesAt) [lines addObject:[NSString stringWithFormat:@"Car stops at ~%@ at the current rate",[df stringFromDate:self.forecast.carFinishesAt]]];
+        [lines addObject:self.forecast.detail];
+    }
     return [lines componentsJoinedByString:@"\n"];
+}
+
+- (void)showBarDetails:(NSInteger)i {
+    NSString *detail = [self detailsForBar:i];
+    if (!detail.length) return;
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = @"Power readings";
+    alert.informativeText = detail;
+    [alert runModal];
+}
+
+- (void)mouseDown:(NSEvent *)event {
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    if (!NSPointInRect(p, _plot) || _nBars <= 0) return;
+    NSInteger i = (NSInteger)((p.x - _plot.origin.x) / _plot.size.width * _nBars);
+    [self showBarDetails:MIN(_nBars - 1, i)];
+}
+
+- (BOOL)accessibilityPerformPress {
+    if (_nBars <= 0) return NO;
+    [self showBarDetails:_nBars - 1];
+    return YES;
 }
 
 - (void)drawRect:(NSRect)dirty {
@@ -293,6 +342,9 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
     CGFloat barW = MAX(1, slot - 1);
     for (NSInteger i = 0; i < _nBars; i++) {
         EBBar b = _bars[i];
+        double barStart = [self displayEnd].timeIntervalSince1970 - self.windowSeconds + i * self.windowSeconds / _nBars;
+        BOOL forecast = [self hasForecast] && barStart >= self.referenceDate.timeIntervalSince1970 - 0.01;
+        if (forecast && _forecastSuppressed) b.known = NO;
         CGFloat x = plot.origin.x + i * slot;
         if (!b.known) {
             if (!any) continue;
@@ -319,19 +371,32 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
             NSColor *c = k == 0 ? carSolar : (k == 1 ? home : exportCol);
             CGFloat hh = h(w);
             if (hh < 0.5) continue;
-            [c setFill];
-            NSRectFill(NSMakeRect(x, y, barW, hh));
+            NSRect rect = NSMakeRect(x, y, barW, hh);
+            if (forecast) {
+                [[c colorWithAlphaComponent:0.16] setFill];
+                NSRectFillUsingOperation(rect, NSCompositingOperationSourceOver);
+                [[c colorWithAlphaComponent:0.68] setStroke];
+                NSBezierPath *outline = [NSBezierPath bezierPathWithRect:NSInsetRect(rect, 0.35, 0.35)];
+                outline.lineWidth = 0.7; [outline stroke];
+            } else { [c setFill]; NSRectFill(rect); }
             y += hh;
         }
         // Down: everything here is grid import, so it is red (shared spec). The car's share is
-        // solid nearest the line, the home's the same red at reduced weight; the tooltip splits it.
+        // solid nearest the line, the home's the same red at reduced weight; the selected interval details split it.
         y = _zeroY - 0.5;
         for (int k = 0; k < 2; k++) {
             double w = k == 0 ? b.carGrid : b.homeGrid;
             CGFloat hh = h(w);
             if (hh < 0.5) continue;
-            [(k == 0 ? carGrid : homeImport) setFill];
-            NSRectFillUsingOperation(NSMakeRect(x, y - hh, barW, hh), NSCompositingOperationSourceOver);
+            NSColor *color = k == 0 ? carGrid : homeImport;
+            NSRect rect = NSMakeRect(x, y - hh, barW, hh);
+            [[color colorWithAlphaComponent:forecast ? 0.16 : color.alphaComponent] setFill];
+            NSRectFillUsingOperation(rect, NSCompositingOperationSourceOver);
+            if (forecast) {
+                [[color colorWithAlphaComponent:0.68] setStroke];
+                NSBezierPath *outline = [NSBezierPath bezierPathWithRect:NSInsetRect(rect, 0.35, 0.35)];
+                outline.lineWidth = 0.7; [outline stroke];
+            }
             y -= hh;
         }
     }
@@ -368,7 +433,7 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
     }
 
     // Hour labels every 3 h (12 h window) or 12 h (48 h window).
-    NSDate *now = self.referenceDate ?: [NSDate date];
+    NSDate *now = [self displayEnd];
     NSDate *start = [now dateByAddingTimeInterval:-self.windowSeconds];
     NSInteger stepHours = self.windowSeconds > 24 * 3600 ? 12 : 3;
     NSCalendar *cal = NSCalendar.currentCalendar;
@@ -396,6 +461,20 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
         }
         tick = [cal dateByAddingUnit:NSCalendarUnitHour value:stepHours toDate:tick options:0];
     }
+    if ([self hasForecast]) {
+        CGFloat nx = plot.origin.x + [self.referenceDate timeIntervalSinceDate:start] / self.windowSeconds * plot.size.width;
+        NSBezierPath *boundary = [NSBezierPath bezierPath];
+        [boundary moveToPoint:NSMakePoint(nx, plot.origin.y)];
+        [boundary lineToPoint:NSMakePoint(nx, NSMaxY(plot))];
+        CGFloat dash[] = {2, 2}; [boundary setLineDash:dash count:2 phase:0];
+        boundary.lineWidth = 0.8; [[NSColor.labelColor colorWithAlphaComponent:0.55] setStroke]; [boundary stroke];
+        NSDictionary *small = @{NSFontAttributeName:[NSFont systemFontOfSize:9 weight:NSFontWeightMedium],
+                                NSForegroundColorAttributeName:EBInkSecondary()};
+        NSString *label = @"Now";
+        [label drawAtPoint:NSMakePoint(nx - [label sizeWithAttributes:small].width - 3, NSMaxY(plot) + 1) withAttributes:small];
+        [(_forecastSuppressed ? @"Stale" : @"Forecast") drawAtPoint:NSMakePoint(nx + 4, NSMaxY(plot) + 1) withAttributes:small];
+    }
+
 }
 
 @end

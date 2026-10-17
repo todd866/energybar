@@ -5,8 +5,8 @@
 #import "store.h"
 #import "chart.h"
 
-@interface EBChartView (ToolTipTesting)
-- (NSString *)view:(NSView *)view stringForToolTip:(NSToolTipTag)tag point:(NSPoint)point userData:(void *)data;
+@interface EBChartView (DetailsTesting)
+- (NSString *)detailsForBar:(NSInteger)i;
 @end
 
 static int gFails = 0;
@@ -65,9 +65,12 @@ static EBSnapshotView *EBState(NSString *name) {
     EBSnapshotView *s = [EBSnapshotView new];
     s.referenceDate = EBFixedDate();
     s.vehicleLine = @"Not linked — AU API unavailable";
+    s.vehicleCloudLine = @"cloud — signed out";
     s.orgId = @"org-test";
     s.pvAt = s.referenceDate;
     s.evnexAt = s.referenceDate;
+    s.gridAsOf = s.referenceDate;
+    s.vehicleSOCAt = s.referenceDate;
     EBDayTotals tod = {0};
     tod.span = 12 * 3600;
     if ([name isEqualToString:@"sunny-export"]) {
@@ -250,6 +253,25 @@ static EBSnapshotView *EBState(NSString *name) {
         s.pvArchiveAvailable = YES; s.pvArchiveWh = 26030;
         s.pvArchiveIntervalCount = 172;
         tod.span = 15 * 3600;
+    } else if ([name hasPrefix:@"charge-eta-"]) {
+        s.pvOK = YES; s.pvW = 4200; s.eDayWh = 7000;
+        s.gridOK = YES; s.supplyW = 200; s.chargeW = 3200;
+        s.chargerOK = YES; s.haveOcpp = YES;
+        s.ocppStatus = @"CHARGING"; s.chargingLogic = @"Transfer";
+        s.chargingCurrentControl = @"SolarControl";
+        s.vehicleHasSOC = YES; s.vehicleSOC = 75;
+        s.vehicleCapacityWh = 24000; s.vehicleChargeEfficiency = .9;
+        if ([name hasSuffix:@"target"]) s.vehicleChargeTargetPercent = 90;
+        if ([name hasSuffix:@"low-target"]) { s.vehicleSOC = 0; s.vehicleChargeTargetPercent = 10; }
+        if ([name hasSuffix:@"long"]) { s.vehicleSOC = 0; s.chargeW = 100; }
+        if ([name hasSuffix:@"near"]) s.vehicleSOC = 99.9;
+        if ([name hasSuffix:@"complete"]) s.vehicleSOC = 100;
+        if ([name hasSuffix:@"paused"]) s.chargingCurrentControl = @"WaitingSolar";
+        if ([name hasSuffix:@"stale"]) s.gridAsOf = [s.referenceDate dateByAddingTimeInterval:-421];
+        if ([name hasSuffix:@"signed-out"]) {
+            s.vehicleHasSOC = NO;
+            s.vehicleTelemetryIssue = @"vehicle cloud: signed out";
+        }
     } else if ([name isEqualToString:@"soc-estimated"]) {
         s.pvOK = YES; s.pvW = 4200; s.eDayWh = 7000;
         s.gridOK = YES; s.supplyW = -200; s.chargeW = 2400;
@@ -333,9 +355,9 @@ static NSUInteger EBControlWidthCheck(NSView *v, CGFloat maxW, const char *state
     return bad;
 }
 
-static NSBitmapImageRep *EBRender(NSView *root, BOOL dark) {
+static NSBitmapImageRep *EBRenderAtSize(NSView *root, BOOL dark, NSSize suppliedSize) {
     [root layoutSubtreeIfNeeded];
-    NSSize sz = root.fittingSize;
+    NSSize sz = suppliedSize.width > 0 ? suppliedSize : root.fittingSize;
     if (sz.width < 10) sz = root.frame.size;
     if (sz.height < 10) sz.height = 420;
     root.frame = NSMakeRect(0, 0, sz.width, sz.height);
@@ -356,7 +378,7 @@ static NSBitmapImageRep *EBRender(NSView *root, BOOL dark) {
     root.frame = stage.bounds;
     root.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     [stage addSubview:root];
-    [w orderFront:nil];
+    [w displayIfNeeded]; // Render without showing a window or stealing keyboard focus.
     [root layoutSubtreeIfNeeded];
 
     __block NSBitmapImageRep *rep = nil;
@@ -576,6 +598,10 @@ static NSUInteger EBVisibleGridGauges(EBInstrumentRow *row) {
     return count;
 }
 
+static NSBitmapImageRep *EBRender(NSView *root, BOOL dark) {
+    return EBRenderAtSize(root, dark, NSZeroSize);
+}
+
 static BOOL EBViewContainsText(NSView *view, NSString *needle) {
     if (view.hidden) return NO;
     if ([view isKindOfClass:NSTextField.class] &&
@@ -674,9 +700,9 @@ int main(int argc, const char *argv[]) {
             chart.windowSeconds = 48 * 3600;
             chart.samples = @[@{@"t": [EBFixedDate() dateByAddingTimeInterval:-60],
                                   @"pvW": @0, @"supplyW": @800, @"chargeW": @300}];
-            NSString *tip = [chart view:chart stringForToolTip:0 point:NSZeroPoint userData:(void *)(intptr_t)63];
-            EBExpect([tip containsString:@"Import 0.8 kW"], "hover gives the whole import stack without mental addition");
-            EBExpect([tip containsString:@"Aug"], "long-window hover includes a calendar date");
+            NSString *tip = [chart detailsForBar:63];
+            EBExpect([tip containsString:@"Import 0.8 kW"], "selected interval gives the whole import stack without mental addition");
+            EBExpect([tip containsString:@"Aug"], "long-window details includes a calendar date");
             EBExpect([chart.accessibilityLabel containsString:@"grid import below zero"],
                      "chart direction and scale are accessible");
             chart.samples = @[];
@@ -710,11 +736,28 @@ int main(int argc, const char *argv[]) {
                             @"tariff-import", @"tariff-export", @"tariff-credit", @"tariff-credit-import",
                             @"tariff-cost-export", @"tariff-rounding", @"tariff-balanced", @"tariff-large",
                             @"tariff-partial", @"tariff-stale", @"tariff-zero", @"tariff-invalid", @"tariff-unpriced",
-                            @"tariff-history-48h"];
+                            @"tariff-history-48h", @"charge-eta-full", @"charge-eta-target", @"charge-eta-near",
+                            @"charge-eta-complete", @"charge-eta-paused", @"charge-eta-stale", @"charge-eta-signed-out"];
         NSString *renderDir = [EBRepoRoot() stringByAppendingPathComponent:@"build/render"];
         NSString *snapDir = [EBRepoRoot() stringByAppendingPathComponent:@"Tests/snapshots"];
         [[NSFileManager defaultManager] createDirectoryAtPath:renderDir withIntermediateDirectories:YES attributes:nil error:nil];
         [[NSFileManager defaultManager] createDirectoryAtPath:snapDir withIntermediateDirectories:YES attributes:nil error:nil];
+
+        for (NSNumber *darkValue in @[@NO, @YES]) {
+            BOOL dark = darkValue.boolValue;
+            NSAlert *alert = EBBuildVehicleCloudAlert(@"cloud — signed out", @"signed out");
+            [alert layout];
+            EBExpect(alert.buttons.count == 2, "cloud entry offers close and the existing manual editor only");
+            EBExpect([alert.buttons[1].title isEqual:@"Set battery %…"], "cloud entry exposes a truthful fallback");
+            EBExpect([alert.informativeText containsString:@"Automatic reconnection is not available"],
+                     "signed-out entry must not promise a working login flow");
+            NSSize alertSize = alert.window.contentView.bounds.size;
+            EBExpect(alertSize.width >= 250 && alertSize.height >= 150, "native cloud dialog has usable dimensions");
+            NSBitmapImageRep *rep = EBRenderAtSize(alert.window.contentView, dark, alertSize);
+            EBExpect(rep != nil, "cloud status alert renders offscreen");
+            EBWritePNG(rep, [renderDir stringByAppendingPathComponent:
+                dark ? @"cloud-status-dark.png" : @"cloud-status-light.png"]);
+        }
 
         NSArray *samples = EBSynthSamples();
         NSMutableArray *pngs = [NSMutableArray array];
@@ -759,8 +802,8 @@ int main(int argc, const char *argv[]) {
                 if ([name isEqualToString:@"tariff-import"]) {
                     EBExpect([pv.gridRow.title isEqualToString:@"Import"], "live import has an explicit instrument name");
                     EBExpect([pv.gridRow.subline isEqualToString:@"6.1 kWh today"], "import row keeps the recorded energy datum");
-                    EBExpect([pv.gridRow.toolTip containsString:@"out 13.9 kWh"] && [pv.gridRow.toolTip containsString:@"$0.99 credit"], "both directional totals remain available together");
-                    EBExpect([pv.gridRow.toolTip containsString:@"now $0.30/h cost"], "live hourly cost uses the active import rate");
+                    EBExpect([pv.detailsText containsString:@"out 13.9 kWh"] && [pv.detailsText containsString:@"$0.99 credit"], "both directional totals remain available together");
+                    EBExpect([pv.detailsText containsString:@"now $0.30/h cost"], "live hourly cost uses the active import rate");
                     EBExpect([pv.gridRow.balanceGauge.period isEqualToString:@"Today"], "balance period is explicit");
                     EBExpect([pv.gridRow.balanceGauge.importValue isEqualToString:@"$2.03"], "balance shows import cost");
                     EBExpect([pv.gridRow.balanceGauge.exportValue isEqualToString:@"$0.99"], "balance shows export credit");
@@ -787,7 +830,7 @@ int main(int argc, const char *argv[]) {
                              fabs(NSMinY(pv.carRow.frame) - NSMaxY(pv.gridRow.frame)) < 0.5,
                              "the Grid row shows one live-flow bar; the money is not drawn as a bar");
                     EBExpect(pv.solarButton.action == @selector(doSolar:) &&
-                             [pv.solarButton.toolTip isEqualToString:@"Charge from surplus solar"] &&
+                             !pv.solarButton.toolTip.length &&
                              [pv.solarButton.accessibilityLabel containsString:@"Solar only"] &&
                              pv.chargeNowButton.action == @selector(doChargeNow:),
                              "footer controls retain explicit remote actions");
@@ -806,7 +849,7 @@ int main(int argc, const char *argv[]) {
                 if ([name isEqualToString:@"tariff-export"]) {
                     EBExpect([pv.gridRow.title isEqualToString:@"Export"], "live export has an explicit instrument name");
                     EBExpect([pv.gridRow.subline isEqualToString:@"13.9 kWh today"], "export row keeps the recorded energy datum");
-                    EBExpect([pv.gridRow.toolTip containsString:@"/h credit"], "export hourly value is named credit");
+                    EBExpect([pv.detailsText containsString:@"/h credit"], "export hourly value is named credit");
                 }
                 if ([name isEqualToString:@"tariff-credit"])
                     EBExpect([pv.gridRow.balanceGauge.netValue isEqualToString:@"+$1.04"] &&
@@ -839,7 +882,7 @@ int main(int argc, const char *argv[]) {
                              [pv.gridRow.balanceGauge.exportValue containsString:@"$1,234.56"] &&
                              [pv.gridRow.balanceGauge.netValue containsString:@"k"],
                              "gross labels retain full money while large net compacts");
-                    EBExpect([pv.gridRow.balanceGauge.toolTip containsString:@"$123,456.78"] &&
+                    EBExpect([pv.detailsText containsString:@"$123,456.78"] &&
                              [pv.gridRow.balanceGauge.accessibilityLabel containsString:@"$123,456.78"],
                              "compacted money retains full cents in tooltip and accessibility");
                     EBPopoverViews *extreme = EBBuildPopover(nil);
@@ -864,7 +907,7 @@ int main(int argc, const char *argv[]) {
                              [pv.gridRow.balanceGauge.netValue isEqualToString:@"−$1.04"] &&
                              [pv.gridRow.balanceGauge.displayText isEqualToString:@"−$1.04 net partial"] &&
                              pv.gridRow.balanceGauge.partial &&
-                             [pv.gridRow.balanceGauge.toolTip containsString:@"partial"],
+                             [pv.detailsText containsString:@"partial"],
                              "partial pricing shows exact recorded gross values and a signed recorded net");
                     EBExpect(pv.gridRow.balanceGauge.partial && pv.gridRow.balanceGauge.offsetRect.size.width > 0 &&
                              pv.gridRow.balanceGauge.remainderRect.size.width > 0,
@@ -878,8 +921,8 @@ int main(int argc, const char *argv[]) {
                 if ([name isEqualToString:@"tariff-stale"])
                     EBExpect([pv.gridRow.subline containsString:@"stale"] &&
                              [pv.gridRow.accessibilityLabel containsString:@"stale"] &&
-                             [pv.gridRow.toolTip containsString:@"stale"] &&
-                             ![pv.gridRow.toolTip containsString:@"/h "] &&
+                             [pv.detailsText containsString:@"stale"] &&
+                             ![pv.detailsText containsString:@"/h "] &&
                              !pv.gridRow.balanceGauge.hidden &&
                              [pv.gridRow.balanceGauge.importValue isEqualToString:@"$2.03"],
                              "stale live meter cannot claim current hourly cost while daily finance survives");
@@ -921,10 +964,10 @@ int main(int argc, const char *argv[]) {
                              [pv.carRow.subline isEqualToString:@"5.0 kWh today"] &&
                              EBViewContainsText(pv.carRow, @"5.0 kWh") &&
                              !EBViewContainsText(pv.carRow, @"from grid") &&
-                             [pv.carRow.toolTip containsString:@"4.0 kWh from the grid"],
+                             [pv.detailsText containsString:@"4.0 kWh from the grid"],
                              "car row keeps total daily energy while tooltip retains the grid portion");
                 if ([name isEqualToString:@"partial-day"])
-                    EBExpect([pv.gridRow.toolTip containsString:@"partial"] ||
+                    EBExpect([pv.detailsText containsString:@"partial"] ||
                              [pv.carRow.subline hasPrefix:@"≥"], "partial day noted");
                 if ([name isEqualToString:@"recovered-session"]) {
                     EBExpect([pv.carRow.subline containsString:@"2.9 kWh exact"],
@@ -936,21 +979,49 @@ int main(int argc, const char *argv[]) {
                     EBExpect([pv.carRow.subline containsString:@"2.9 kWh @03:45"],
                              "session total remains visible with a truthful stale timestamp");
                 }
-                // Tooltips are terse: one line of figures, never a paragraph (Glancebar's rule).
+                // Delayed hover text is removed; Details and accessible labels preserve context.
                 for (NSView *tipped in @[pv.solarRow, pv.gridRow, pv.carRow, pv.solarButton, pv.chargeNowButton,
                                          pv.nowCaption, pv.todayCaption])
-                    if (tipped.toolTip.length > 90 || [tipped.toolTip containsString:@"\n"])
-                        EBFail("%s: wordy tooltip: %s", st, tipped.toolTip.UTF8String);
+                    if (tipped.toolTip.length)
+                        EBFail("%s: unexpected tooltip: %s", st, tipped.toolTip.UTF8String);
                 if ([name isEqualToString:@"solar-charging"])
                     EBExpect(fabs(pv.solarRow.gaugeFraction - 0.96) < 0.001, "solar bar is full at the inverter's 5 kW");
+                if ([name hasPrefix:@"charge-eta-"]) {
+                    EBChargeEstimate *eta = EBChargeEstimateForSnapshot(snap, @[]);
+                    for (NSString *edge in @[@"charge-eta-low-target", @"charge-eta-long"]) {
+                        EBPopoverViews *edgeView = EBBuildPopover(nil);
+                        EBApplySnapshot(edgeView, EBState(edge), @[]);
+                        EBAssertNoOverlap(edgeView.carRow, edge.UTF8String);
+                        EBAssertNoTruncate(edgeView.carRow, edge.UTF8String);
+                        EBAssertContained(edgeView.carRow, edge.UTF8String);
+                        EBExpect(fabs(NSMidX(edgeView.carRow.targetLabelFrame) - edgeView.carRow.targetMarkerX) < .1,
+                                 "low targets and long durations stay centered and fit");
+                    }
+
+                    EBExpect(pv.carRow.frame.size.height == 30 && pv.batteryRow.hidden,
+                             "ETA adds no instrument row or panel height");
+                    if (eta.label.length) {
+                        EBExpect(fabs(NSMidX(pv.carRow.targetLabelFrame) - pv.carRow.targetMarkerX) < .1,
+                                 "duration is spatially centered above the target marker");
+                        EBExpect(NSMaxY(pv.carRow.targetLabelFrame) <= 11,
+                                 "duration stays above the power value and gauge");
+                    } else EBExpect(pv.carRow.targetFraction < 0 && [pv.detailsText containsString:@"ETA"],
+                                    "unavailable ETA explains reason without invented duration");
+                }
                 if ([name isEqualToString:@"soc-estimated"]) {
+                    NSMenuItem *vehicle = [pv.gearMenu itemWithTag:9001];
+                    NSMenuItem *cloud = [vehicle.submenu itemWithTitle:@"Vehicle cloud…"];
+                    EBExpect(cloud.action == @selector(vehicleCloudDetails:),
+                             "cloud status remains discoverable while estimated SOC is available");
+                    EBExpect([cloud.toolTip containsString:@"signed out"],
+                             "a useful estimate does not hide signed-out cloud state");
                     // The pack level rides on the Car row (Glancebar's quantity-plus-flow language).
                     EBExpect(pv.batteryRow.hidden, "soc-estimated folds the battery into the Car row");
                     EBExpect(fabs(pv.carRow.gaugeFraction - 0.58) < 0.001, "car bar is the 58% pack level");
                     EBExpect(fabs(pv.carRow.trendTo - (0.58 + 2400 * 0.9 / 60000)) < 0.001,
                              "trend arrow runs to the level an hour of charging reaches");
-                    EBExpect([pv.carRow.toolTip containsString:@"battery 58% est."],
-                             "estimated provenance is on the Car row's tooltip");
+                    EBExpect([pv.detailsText containsString:@"battery 58% est."],
+                             "estimated provenance is on the explicit Details");
                     EBExpect(![pv.carRow.subline containsString:@"est."], "no estimate word on the row itself");
                     EBExpect([pv.carRow.accessibilityLabel containsString:@"battery 58% estimated"],
                              "estimated SoC preserves accessibility provenance");
@@ -979,7 +1050,7 @@ int main(int argc, const char *argv[]) {
                 if ([name isEqualToString:@"vehicle-store-down"]) {
                     EBExpect([pv.statusLabel isEqualToString:@"Vehicle state not saved"] &&
                              !pv.faultRow.hidden, "vehicle persistence failure is prominent");
-                    EBExpect([pv.carRow.toolTip containsString:@"permission denied"],
+                    EBExpect([pv.detailsText containsString:@"permission denied"],
                              "vehicle persistence detail remains available");
                 }
 
@@ -1074,7 +1145,7 @@ int main(int argc, const char *argv[]) {
             EBApplySnapshot(pv, snap, samples);
             EBExpect([pv.gridRow.title isEqualToString:@"Import"] && [pv.gridRow.subline hasPrefix:@"1.6 kWh"],
                      "grid datum pairs the live direction with that direction's own total");
-            EBExpect([pv.gridRow.toolTip containsString:@"out 14.6 kWh"], "grid tooltip keeps both totals");
+            EBExpect([pv.detailsText containsString:@"out 14.6 kWh"], "Details keeps both totals");
             snap.supplyW = 0;
             EBApplySnapshot(pv, snap, samples);
             EBExpect([pv.gridRow.title isEqualToString:@"Grid"] && [pv.gridRow.subline isEqualToString:@"balanced"],

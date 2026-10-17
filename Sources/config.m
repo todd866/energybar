@@ -156,6 +156,9 @@ EBConfig *EBLoadConfig(void) {
     double capacityKWh = 0;
     config.evBatteryWh = EBParseFiniteDouble(capacity, &capacityKWh) && capacityKWh > 0
         ? capacityKWh * 1000.0 : 0;
+    double target = 0;
+    config.evChargeTargetPercent = EBParseFiniteDouble(EBConfigString(file, @"EV_CHARGE_TARGET_PERCENT"), &target)
+        && target > 0 && target <= 100 ? target : 0;
     NSString *inverter = EBConfigString(file, @"INVERTER_KW");
     double inverterKW = 0;
     config.inverterW = EBParseFiniteDouble(inverter, &inverterKW) && inverterKW > 0 ? inverterKW * 1000.0 : 0;

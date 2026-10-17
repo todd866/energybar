@@ -7,6 +7,8 @@ SDKROOT="${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
 BUILD_DIR="build"
 mkdir -p "$BUILD_DIR"
 
+python3 -m unittest discover -s Tests -p 'test_geely_snapshot.py'
+
 COMMON=(-fobjc-arc -O0 -g -Wall -Wextra -Werror
     -isysroot "$SDKROOT" -mmacosx-version-min=13.0 -ISources)
 
@@ -18,6 +20,8 @@ run_foundation() {
 }
 
 run_foundation test_pure Sources/pure.m Tests/test_pure.m
+run_foundation test_charge_estimate Sources/charge_estimate.m Tests/test_charge_estimate.m
+run_foundation test_forecast Sources/pure.m Sources/charge_estimate.m Sources/forecast.m Tests/test_forecast.m
 run_foundation test_v11 Sources/pure.m Sources/parse.m Sources/store.m Tests/test_v11.m
 run_foundation test_ui Sources/store.m Tests/test_ui.m
 run_foundation test_soc Sources/pure.m Sources/store.m Sources/soc.m Tests/test_soc.m
@@ -32,7 +36,7 @@ run_foundation test_fronius_archive Sources/fronius_archive.m Tests/test_fronius
 
 "$CC" "${COMMON[@]}" \
     Sources/pure.m Sources/parse.m Sources/store.m Sources/tariff.m Sources/soc.m Sources/chart.m \
-    Sources/tiles.m Sources/popover.m Sources/vehicle.m Tests/test_render.m \
+    Sources/tiles.m Sources/charge_estimate.m Sources/forecast.m Sources/popover.m Sources/vehicle.m Tests/test_render.m \
     -framework Cocoa -o "$BUILD_DIR/test_render"
 RENDER_ARGS=()
 if [[ -n "${1:-}" ]]; then RENDER_ARGS+=("$1"); fi
@@ -40,6 +44,13 @@ if [[ "${ENERGYBAR_SKIP_PIXEL_SNAPSHOTS:-0}" == "1" ]]; then
     RENDER_ARGS+=(--skip-pixel-snapshots)
 fi
 "$BUILD_DIR/test_render" "${RENDER_ARGS[@]}" -NSViewLayoutAssertions YES
+
+"$CC" "${COMMON[@]}" \
+    Sources/config.m Sources/tariff.m Sources/fixture.m Sources/pure.m Sources/parse.m Sources/store.m \
+    Sources/sessions.m Sources/fronius_archive.m Sources/soc.m Sources/chart.m Sources/tiles.m \
+    Sources/charge_estimate.m Sources/forecast.m Sources/popover.m Sources/vehicle.m Tests/test_presentation.m \
+    -framework Cocoa -framework ServiceManagement -o "$BUILD_DIR/test_presentation"
+"$BUILD_DIR/test_presentation"
 
 if [[ "${ENERGYBAR_SANITIZERS:-0}" == "1" ]]; then
     SAN=(-fsanitize=address,undefined -fno-omit-frame-pointer)

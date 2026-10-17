@@ -16,6 +16,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property(copy) NSString *sessionsPath;
 @property(copy) NSString *froniusArchivePath;
 @property double evBatteryWh;
+/// Display-only estimate target; 0 = unknown. Never changes the vehicle limit.
+@property double evChargeTargetPercent;
 /// Inverter AC capacity in W (INVERTER_KW); 0 = unknown. The Solar bar is full at this.
 @property double inverterW;
 @property double evChargeEfficiency;

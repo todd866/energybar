@@ -12,3 +12,20 @@ samples.jsonl
 a.out
 *.o
 *.dSYM/
+
+__pycache__/
+*.pyc
+
+# Local integration evidence and packaged apps are never publication inputs.
+private/
+evidence/
+*.app/
+*.dmg
+*.zip
+*.key
+*.crt
+forecast.json
+vehicle-cloud.json
+sessions.json
+fronius-pv.json
+solar-forecast.json

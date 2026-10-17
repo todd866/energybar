@@ -437,7 +437,11 @@ static NSDate *EBCacheDate(id value) {
 - (void)reloadIfChanged {
     NSDictionary *attrs = [NSFileManager.defaultManager attributesOfItemAtPath:self.cachePath error:nil];
     NSDate *mtime = attrs.fileModificationDate;
-    if (!mtime) { _hasSOC = NO; _loadedMtime = nil; _error = nil; return; }
+    if (!mtime) {
+        _hasSOC = NO; _loadedMtime = nil; _error = nil;
+        _at = _checkedAt = nil; _source = nil; _soc = _range = 0;
+        return;
+    }
     if (_loadedMtime && [mtime isEqualToDate:_loadedMtime]) return;
     _loadedMtime = mtime;
     _hasSOC = NO; _soc = 0; _range = 0; _at = _checkedAt = nil; _source = nil; _error = nil;
@@ -446,17 +450,21 @@ static NSDate *EBCacheDate(id value) {
     if (![json isKindOfClass:NSDictionary.class]) { _error = @"unreadable"; return; }
     NSDictionary *d = json;
     id soc = d[@"soc"];
-    if ([soc isKindOfClass:NSNumber.class] && isfinite([soc doubleValue]) &&
+    if (EBFiniteStateNumber(soc) && isfinite([soc doubleValue]) &&
         [soc doubleValue] >= 0 && [soc doubleValue] <= 100) { _hasSOC = YES; _soc = [soc doubleValue]; }
     if ([d[@"rangeKm"] isKindOfClass:NSNumber.class]) _range = MAX(0, [d[@"rangeKm"] doubleValue]);
     _at = EBCacheDate(d[@"at"]);
     _checkedAt = EBCacheDate(d[@"checkedAt"]) ?: _at;
     if ([d[@"source"] isKindOfClass:NSString.class]) _source = d[@"source"];
     if ([d[@"error"] isKindOfClass:NSString.class]) _error = d[@"error"];
+    if (_hasSOC && !_at && !_error.length) _error = @"measurement time unavailable";
 }
 - (BOOL)fresh {
     [self reloadIfChanged];
-    return _checkedAt && -_checkedAt.timeIntervalSinceNow <= self.maxAgeSeconds;
+    double checkAge = _checkedAt ? -_checkedAt.timeIntervalSinceNow : INFINITY;
+    double readingAge = _at ? -_at.timeIntervalSinceNow : INFINITY;
+    return !_error.length && checkAge >= -60 && checkAge <= self.maxAgeSeconds &&
+        readingAge >= -60 && readingAge <= self.maxAgeSeconds;
 }
 - (BOOL)available { return [self fresh] && _hasSOC; }
 - (BOOL)hasSOC { return [self available]; }
@@ -489,6 +497,9 @@ static NSDate *EBCacheDate(id value) {
         @"statusLine": self.statusLine,
         @"cachePath": self.cachePath ?: @"",
         @"maxAgeSeconds": @(self.maxAgeSeconds),
+        @"readingAt": _at ? EBDateString(_at) : NSNull.null,
+        @"checkedAt": _checkedAt ? EBDateString(_checkedAt) : NSNull.null,
+        @"error": _error ?: NSNull.null,
     };
 }
 @end
