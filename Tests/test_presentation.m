@@ -46,6 +46,7 @@ static EBSnapshot *Snapshot(double watts) {
 static int Regression(void) {
     EBTestApp *app=[EBTestApp new]; app.config=[EBConfig new];
     app.config.samplesPath=@"/nonexistent-energybar-test/history.jsonl";
+    app.config.statisticsPath=@""; // Presentation tests must never touch the owner's history.
     app.config.tariffPath=@"/nonexistent-energybar-test/tariff.json";
     app.config.orgId=@"test";
     [app preparePopover];
@@ -89,7 +90,13 @@ static int Regression(void) {
     vm.vehicleSOCIsEstimate=NO; vm.vehicleSOC=100; vm.vehicleSOCAt=vm.referenceDate;
     vm.gridStale=YES; EBApplySnapshot(app.views,vm,@[]);
     [app expirePreparedPresentationAt:vm.referenceDate];
-    Expect([app.views.carRow.targetLabel isEqual:@"✓"],"confirmed target marker must survive meter staleness");
+    Expect(app.views.carRow.targetLabel.length==0 && app.views.carRow.targetFraction<0,
+           "confirmed completion stays label-free after opening freshness guard");
+    vm.vehicleSOCIsEstimate=YES;
+    EBApplySnapshot(app.views,vm,@[]);
+    [app expirePreparedPresentationAt:vm.referenceDate];
+    Expect(app.views.carRow.targetLabel.length==0 && app.views.carRow.targetFraction<0,
+           "inferred completion stays label-free after opening freshness guard");
     printf("presentation regression: %s; opening with blocked history %.3f ms\n", failures?"FAILED":"ok",openMS);
     return failures?1:0;
 }

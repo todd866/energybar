@@ -16,8 +16,10 @@
 #import "tiles.h"
 #import "popover.h"
 #import "vehicle.h"
+#import "statistics.h"
+#import "statistics_view.h"
 
-static NSString * const EBVersion = @"0.5.3";
+static NSString * const EBVersion = @"0.5.4";
 static NSString * const EBCognitoClientId = @"rol3lsv2vg41783550i18r7vi";
 static NSString * const EBCognitoURL = @"https://cognito-idp.ap-southeast-2.amazonaws.com/";
 static NSString * const EBEvnexBase = @"https://client-api.evnex.io";
@@ -615,6 +617,10 @@ static NSColor *EBBarColor(EBBarState st, NSString *glyph) {
 @property BOOL presentationInFlight;
 @property BOOL presentationPending;
 @property(copy) NSDate *weatherNextAttemptAt;
+/// Access document/update clock only on EBStoreQueue; publish prepared report on main.
+@property(copy) NSDate *statisticsNextUpdateAt;
+@property(copy) NSDictionary *statisticsDocument;
+@property(strong) EBStatisticsReport *statisticsReport;
 @property double popoverOpenStartedAt;
 @property double popoverShownMilliseconds;
 @property double popoverEventMilliseconds;
@@ -1120,6 +1126,9 @@ static NSDictionary *EBForecastCache(void) {
     vm.referenceDate = now;
     NSString *samplesPath = self.config.samplesPath;
     NSString *tariffPath = self.config.tariffPath;
+    NSString *statisticsPath = self.config.statisticsPath;
+    NSString *statisticsSource = EBStableSourceID(@"statistics", [NSString stringWithFormat:@"%lu:%@/%@",
+        (unsigned long)self.config.froniusAPI.length, self.config.froniusAPI ?: @"", self.config.chargePointId ?: @""]);
     NSArray *archive = self.froniusArchive ?: @[];
     NSArray *livePV = [self.livePV copy] ?: @[];
     // Store reads are serialized with writes; none runs on the opening action.
@@ -1131,6 +1140,17 @@ static NSDictionary *EBForecastCache(void) {
         vm.tariffError = tariffError.localizedDescription;
         NSCalendar *calendar = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
         calendar.timeZone = tariff.timeZone ?: NSTimeZone.localTimeZone;
+        if (statisticsPath.length && (!self.statisticsNextUpdateAt || [self.statisticsNextUpdateAt compare:now] != NSOrderedDescending)) {
+            self.statisticsNextUpdateAt = [now dateByAddingTimeInterval:300];
+            NSError *statisticsError = nil;
+            NSDictionary *saved = EBStatisticsUpdate(statisticsPath, statisticsSource, samples, archive, now, &statisticsError);
+            if (saved) self.statisticsDocument = saved;
+            // A changed source must not inherit the previous source's prepared totals.
+            NSDictionary *document = [self.statisticsDocument[@"source"] isEqual:statisticsSource] ? self.statisticsDocument : @{};
+            EBStatisticsReport *report = EBStatisticsSummarize(document ?: @{}, now, calendar.timeZone);
+            report.error = statisticsError.localizedDescription;
+            dispatch_async(dispatch_get_main_queue(), ^{ self.statisticsReport = report; });
+        }
         NSDate *day = [calendar startOfDayForDate:now];
         vm.today = EBStoreIntegrateSince(samples, day, now);
         vm.gridCostToday = EBTariffIntegrate(samples, day, now, tariff);
@@ -1345,6 +1365,16 @@ static NSDictionary *EBForecastCache(void) {
     scroll.documentView = text;
     alert.accessoryView = scroll;
     [alert runModal];
+}
+
+- (void)showStatistics:(id)sender {
+    (void)sender;
+    EBStatisticsReport *report = self.statisticsReport;
+    if (!report) {
+        report = [EBStatisticsReport new];
+        report.error = @"No recorded history is available yet. Statistics prepare in the background.";
+    }
+    [EBBuildStatisticsAlert(report) runModal];
 }
 
 - (void)refreshNow:(id)sender {

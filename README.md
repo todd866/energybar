@@ -11,6 +11,10 @@ vehicle state without treating missing data as zero or an estimate as fact.
 - 12-hour and 48-hour history. Solar is above the marked zero, split into car (blue), home (grey) and export (green); grid import is below, in red. Rounded axis limits share one linear scale. A hatched band is a gap in the samples, not a zero. Click a bar for its power breakdown and import total, with calendar dates in the 48-hour view;
 - Solar and Charge now as one mode control (orange for solar, green for charge now). Stop is a separate button and asks before sending a remote stop;
 - day totals with explicit partial-coverage caveats and metered shutdown recovery;
+- **⋯ → Statistics…**: daily and Monday-based weekly recorded energy for solar,
+  gross import, gross export and car charging, with independent coverage. A private
+  local store retains up to 90 days; forecasts never enter these totals. See
+  [statistics and retention](docs/statistics.md);
 - direct or estimated vehicle SoC with visible provenance. A direct reading can come from a local helper that writes `~/.cache/energybar/vehicle-cloud.json` (`soc`, `at`, `checkedAt`, optional `rangeKm`, `source`, `error`); both the measurement and check must be within the last 30 minutes, and an `error` is shown rather than a number. **⋯ → Vehicle → Vehicle cloud…** exposes cloud status even while a local estimate is available;
 - charger actions whose HTTP failures are shown instead of silently ignored.
 
@@ -169,6 +173,8 @@ Car charging time uses the configured pack capacity, fresh SoC and Evnex car AC
 power, with a compact approximate duration above the target marker. **⋯ → Details**
 explains the source, efficiency, unknown usable capacity/vehicle limit and taper.
 A configured display target does not change the car's charging limit.
+At or above that target, the remaining-time label and marker disappear; completion
+and estimate provenance remain in Details. A valid estimate below target still shows.
 
 The existing chart can extend into outlined forecast bars (12h: 8h past + 4h
 future; 48h: 36h past + 12h future). A measured solar baseline and optionally

@@ -205,6 +205,7 @@ EBPopoverViews *EBBuildPopover(id target) {
     // ⋯ menu (built once; target handles actions). Vehicle submenu is refreshed in EBApplySnapshot.
     v.gearMenu = [NSMenu new];
     [v.gearMenu addItemWithTitle:@"Details…" action:@selector(showDetails:) keyEquivalent:@""];
+    [v.gearMenu addItemWithTitle:@"Statistics…" action:@selector(showStatistics:) keyEquivalent:@""];
     [v.gearMenu addItemWithTitle:@"Refresh now" action:@selector(refreshNow:) keyEquivalent:@""];
     [v.gearMenu addItemWithTitle:@"Open samples folder" action:@selector(openSamples:) keyEquivalent:@""];
     [v.gearMenu addItemWithTitle:@"Copy diagnostics" action:@selector(copyDiagnostics:) keyEquivalent:@""];

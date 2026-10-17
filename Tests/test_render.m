@@ -266,6 +266,11 @@ static EBSnapshotView *EBState(NSString *name) {
         if ([name hasSuffix:@"long"]) { s.vehicleSOC = 0; s.chargeW = 100; }
         if ([name hasSuffix:@"near"]) s.vehicleSOC = 99.9;
         if ([name hasSuffix:@"complete"]) s.vehicleSOC = 100;
+        if ([name isEqual:@"charge-eta-estimated-complete"]) {
+            s.vehicleSOCIsEstimate = YES;
+            s.chargeW = 0;
+            s.chargingCurrentControl = @"WaitingSolar";
+        }
         if ([name hasSuffix:@"paused"]) s.chargingCurrentControl = @"WaitingSolar";
         if ([name hasSuffix:@"stale"]) s.gridAsOf = [s.referenceDate dateByAddingTimeInterval:-421];
         if ([name hasSuffix:@"signed-out"]) {
@@ -737,7 +742,7 @@ int main(int argc, const char *argv[]) {
                             @"tariff-cost-export", @"tariff-rounding", @"tariff-balanced", @"tariff-large",
                             @"tariff-partial", @"tariff-stale", @"tariff-zero", @"tariff-invalid", @"tariff-unpriced",
                             @"tariff-history-48h", @"charge-eta-full", @"charge-eta-target", @"charge-eta-near",
-                            @"charge-eta-complete", @"charge-eta-paused", @"charge-eta-stale", @"charge-eta-signed-out"];
+                            @"charge-eta-complete", @"charge-eta-estimated-complete", @"charge-eta-paused", @"charge-eta-stale", @"charge-eta-signed-out"];
         NSString *renderDir = [EBRepoRoot() stringByAppendingPathComponent:@"build/render"];
         NSString *snapDir = [EBRepoRoot() stringByAppendingPathComponent:@"Tests/snapshots"];
         [[NSFileManager defaultManager] createDirectoryAtPath:renderDir withIntermediateDirectories:YES attributes:nil error:nil];
@@ -1005,8 +1010,11 @@ int main(int argc, const char *argv[]) {
                                  "duration is spatially centered above the target marker");
                         EBExpect(NSMaxY(pv.carRow.targetLabelFrame) <= 11,
                                  "duration stays above the power value and gauge");
-                    } else EBExpect(pv.carRow.targetFraction < 0 && [pv.detailsText containsString:@"ETA"],
-                                    "unavailable ETA explains reason without invented duration");
+                    } else EBExpect(pv.carRow.targetFraction < 0 && [pv.detailsText containsString:eta.detail],
+                                    "no-duration state has no label or marker while Details preserves the reason");
+                    if ([name hasSuffix:@"complete"])
+                        EBExpect(pv.carRow.targetLabel.length == 0 && pv.carRow.trendFrom < 0,
+                                 "completed car has no replacement text, tick or trend arrow");
                 }
                 if ([name isEqualToString:@"soc-estimated"]) {
                     NSMenuItem *vehicle = [pv.gearMenu itemWithTag:9001];
