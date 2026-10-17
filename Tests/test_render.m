@@ -61,7 +61,44 @@ static NSArray *EBDaylightSamples(NSDate *now, NSTimeInterval window) {
     return rows;
 }
 
+static EBPowerForecast *EBSyntheticForecast(NSString *name) {
+    EBPowerForecastInput *i=[EBPowerForecastInput new]; i.now=EBFixedDate();
+    i.inverterW=5000; i.chargerW=3500; i.chargerState=EBChargerStateSolar;
+    i.chargerStatusAt=i.now; i.chargerMeterAt=i.now;
+    NSMutableArray *solar=[NSMutableArray array],*meter=[NSMutableArray array];
+    for (int n=-48;n<=0;n++) {
+        NSDate *t=[i.now dateByAddingTimeInterval:n*300];
+        [solar addObject:@{@"t":t,@"pvW":@4000}];
+        [meter addObject:@{@"t":t,@"supplyW":@500,@"chargeW":@3500}];
+    }
+    NSMutableArray *times=[NSMutableArray array],*radiation=[NSMutableArray array];
+    for (int n=-4;n<=25;n++) {
+        [times addObject:@([i.now dateByAddingTimeInterval:n*3600].timeIntervalSince1970)];
+        [radiation addObject:@(n>0?fmax(0,500-n*65):500)];
+    }
+    i.solarSamples=solar; i.meterSamples=meter;
+    i.weather=@{@"fetchedAt":i.now,@"response":@{@"hourly":@{@"time":times,@"shortwave_radiation":radiation},
+        @"hourly_units":@{@"time":@"unixtime",@"shortwave_radiation":@"W/m²"}}};
+    i.chargeEstimate=[EBChargeEstimate new]; i.chargeEstimate.available=YES; i.chargeEstimate.seconds=7200;
+    if ([name isEqual:@"forecast-signed-out"] || [name isEqual:@"forecast-stopped"] || [name isEqual:@"forecast-solar-only"]) {
+        i.chargeEstimate.available=NO; i.chargeEstimate.state=@"battery-unavailable";
+        i.chargeEstimate.detail=@"vehicle cloud: signed out";
+    }
+    if ([name isEqual:@"forecast-stopped"]) i.chargerState=EBChargerStateWaiting;
+    if ([name isEqual:@"forecast-solar-only"]) i.meterSamples=@[];
+    if ([name isEqual:@"forecast-unavailable"]) { i.weather=nil; i.solarSamples=@[]; i.meterSamples=@[]; i.chargerState=EBChargerStateUnknown; }
+    return EBBuildPowerForecast(i);
+}
+
 static EBSnapshotView *EBState(NSString *name) {
+    if ([name hasPrefix:@"forecast-"]) {
+        EBSnapshotView *s=EBState(@"solar-charging");
+        s.forecast=EBSyntheticForecast(name);
+        if (![name isEqual:@"forecast-charging"] && ![name isEqual:@"forecast-expired-car"]) {
+            s.vehicleHasSOC=NO; s.vehicleHasStoredState=NO;
+        }
+        return s;
+    }
     EBSnapshotView *s = [EBSnapshotView new];
     s.referenceDate = EBFixedDate();
     s.vehicleLine = @"Not linked — AU API unavailable";
@@ -742,7 +779,9 @@ int main(int argc, const char *argv[]) {
                             @"tariff-cost-export", @"tariff-rounding", @"tariff-balanced", @"tariff-large",
                             @"tariff-partial", @"tariff-stale", @"tariff-zero", @"tariff-invalid", @"tariff-unpriced",
                             @"tariff-history-48h", @"charge-eta-full", @"charge-eta-target", @"charge-eta-near",
-                            @"charge-eta-complete", @"charge-eta-estimated-complete", @"charge-eta-paused", @"charge-eta-stale", @"charge-eta-signed-out"];
+                            @"charge-eta-complete", @"charge-eta-estimated-complete", @"charge-eta-paused", @"charge-eta-stale", @"charge-eta-signed-out",
+                            @"forecast-charging", @"forecast-signed-out", @"forecast-stopped",
+                            @"forecast-solar-only", @"forecast-unavailable", @"forecast-expired-car"];
         NSString *renderDir = [EBRepoRoot() stringByAppendingPathComponent:@"build/render"];
         NSString *snapDir = [EBRepoRoot() stringByAppendingPathComponent:@"Tests/snapshots"];
         [[NSFileManager defaultManager] createDirectoryAtPath:renderDir withIntermediateDirectories:YES attributes:nil error:nil];
@@ -783,6 +822,28 @@ int main(int argc, const char *argv[]) {
                 // NSPopover insets its content view; a refresh must not move it.
                 [pv.root setFrameOrigin:NSMakePoint(7, 13)];
                 EBApplySnapshot(pv, snap, samp);
+                if ([name isEqual:@"forecast-expired-car"])
+                    [pv.chart expireForecastAt:[snap.referenceDate dateByAddingTimeInterval:151]];
+                if ([name hasPrefix:@"forecast-"]) {
+                    NSString *past=[pv.chart detailsForBar:31],*future=[pv.chart detailsForBar:32];
+                    EBExpect(![past hasPrefix:@"Forecast"] && [future hasPrefix:@"Forecast"],
+                             "Now must separate observed and projected bars even with unavailable data");
+                    if ([name isEqual:@"forecast-signed-out"] || [name isEqual:@"forecast-expired-car"]) {
+                        EBExpect([future containsString:@"Solar 4.0 kW"] && [future containsString:@"Home 1.0 kW"] &&
+                                 [future containsString:@"Car — unavailable"] && [future containsString:@"Export — unavailable"],
+                                 "missing/expired car preserves solar and home without invented export");
+                    }
+                    if ([name isEqual:@"forecast-solar-only"])
+                        EBExpect([future containsString:@"Solar 4.0 kW"] && [future containsString:@"Home — unavailable"],
+                                 "missing household history still shows independently calibrated solar");
+                    if ([name isEqual:@"forecast-unavailable"])
+                        EBExpect([future containsString:@"Solar — unavailable"] && [future containsString:@"Car — unavailable"],
+                                 "all-unavailable projection retains a truthful future region");
+                    pv.chart.windowSeconds=48*3600;
+                    EBExpect(![[pv.chart detailsForBar:47] hasPrefix:@"Forecast"] && [[pv.chart detailsForBar:48] hasPrefix:@"Forecast"],
+                             "48h outlook keeps exactly 36h measured and 12h projected");
+                    pv.chart.windowSeconds=12*3600;
+                }
                 EBExpect(NSEqualPoints(pv.root.frame.origin, NSMakePoint(7, 13)),
                          "refresh keeps the popover's content origin");
                 [pv.root setFrameOrigin:NSZeroPoint];

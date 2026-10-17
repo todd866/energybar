@@ -6,6 +6,10 @@
 #pragma clang diagnostic pop
 #undef main
 
+@interface EBChartView (ForecastDetailsTesting)
+- (NSString *)detailsForBar:(NSInteger)i;
+@end
+
 static int failures;
 #define Expect(c, msg) do { if (!(c)) { fprintf(stderr,"FAIL: %s\n", msg); failures++; } } while (0)
 @interface EBTestPopover : NSPopover
@@ -97,6 +101,27 @@ static int Regression(void) {
     [app expirePreparedPresentationAt:vm.referenceDate];
     Expect(app.views.carRow.targetLabel.length==0 && app.views.carRow.targetFraction<0,
            "inferred completion stays label-free after opening freshness guard");
+    // Exercise the actual opening guard: an expired car does not expire fresh solar/home.
+    EBPowerForecast *forecast=[EBPowerForecast new]; forecast.asOf=vm.referenceDate;
+    forecast.available=forecast.solarAvailable=forecast.homeAvailable=forecast.carAvailable=forecast.gridAvailable=YES;
+    forecast.solarValidUntil=[vm.referenceDate dateByAddingTimeInterval:600];
+    forecast.homeValidUntil=[vm.referenceDate dateByAddingTimeInterval:3600];
+    forecast.carValidUntil=[vm.referenceDate dateByAddingTimeInterval:150];
+    NSMutableDictionary *row=[EBForecastBalance(4000,1000,3500) mutableCopy];
+    row[@"pvLowW"]=@2400; row[@"pvHighW"]=@5000;
+    row[@"start"]=vm.referenceDate; row[@"end"]=[vm.referenceDate dateByAddingTimeInterval:86400];
+    forecast.rows=@[row]; vm.forecast=forecast;
+    vm.gridStale=NO; vm.vehicleSOC=50; vm.vehicleSOCIsEstimate=NO;
+    EBApplySnapshot(app.views,vm,@[]);
+    [app expirePreparedPresentationAt:[vm.referenceDate dateByAddingTimeInterval:151]];
+    NSString *projection=[app.views.chart detailsForBar:32];
+    Expect([projection containsString:@"Solar 4.0 kW"] && [projection containsString:@"Home 1.0 kW"] &&
+           [projection containsString:@"Car — unavailable"] && [projection containsString:@"Import — unavailable"],
+           "opening guard independently expires car and dependent grid without hiding solar/home");
+    [app expirePreparedPresentationAt:[vm.referenceDate dateByAddingTimeInterval:601]];
+    projection=[app.views.chart detailsForBar:32];
+    Expect([projection containsString:@"Solar — unavailable"] && [projection containsString:@"Home 1.0 kW"],
+           "solar expiry retains independently current household baseline");
     printf("presentation regression: %s; opening with blocked history %.3f ms\n", failures?"FAILED":"ok",openMS);
     return failures?1:0;
 }

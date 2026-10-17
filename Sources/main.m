@@ -685,6 +685,7 @@ static EBPowerForecast *EBForecastForSnapshot(EBSnapshotView *vm, NSArray *solar
     input.solarSamples = solarRows; input.meterSamples = samples; input.weather = weather;
     input.inverterW = vm.inverterW; input.chargerW = vm.chargeW;
     input.chargerStatusAt = vm.evnexAt;
+    input.chargerMeterAt = vm.gridAsOf;
     input.chargerState = vm.chargerOK ? EBComputeChargerState(vm.ocppStatus, vm.chargingLogic,
         vm.chargingCurrentControl, vm.chargeNow, vm.haveOcpp) : EBChargerStateUnknown;
     input.chargeEstimate = EBChargeEstimateForSnapshot(vm, samples);
@@ -1245,9 +1246,9 @@ static NSDictionary *EBForecastCache(void) {
         self.views.detailsText = [details componentsJoinedByString:@"\n\n"];
         [self.views.carRow reload];
     }
-    NSTimeInterval weatherAge = vm.forecast.weatherFetchedAt ? [now timeIntervalSinceDate:vm.forecast.weatherFetchedAt] : INFINITY;
     BOOL staleCharge = [eta.state hasPrefix:@"stale-"];
-    if (weatherAge > 7200 || weatherAge < -60 || staleCharge) [self.views.chart suppressForecast];
+    [self.views.chart expireForecastAt:now];
+    if (staleCharge) [self.views.chart suppressCarForecast];
     NSTimeInterval meterAge = vm.gridAsOf ? [now timeIntervalSinceDate:vm.gridAsOf] : INFINITY;
     if (vm.gridStale || meterAge > 420 || meterAge < -60) {
         self.views.gridRow.symbolName = @"clock.fill";
@@ -1767,15 +1768,21 @@ static int EBDump(BOOL jsonMode, NSString *renderPrefix) {
         BOOL sessionDayAvailable = s.sessionHistory.complete && sessionThrough &&
             [sessionThrough compare:sessionDay] != NSOrderedAscending && sessionDayTotal.exact;
         NSDictionary *out = @{
-            @"schemaVersion": @8,
+            @"schemaVersion": @9,
             @"chargingEstimate": chargeEstimate.dictionaryValue,
             @"forecast": @{
                 @"available": @(estimateView.forecast.available),
+                @"solarAvailable": @(estimateView.forecast.solarAvailable),
+                @"homeAvailable": @(estimateView.forecast.homeAvailable),
+                @"carAvailable": @(estimateView.forecast.carAvailable),
+                @"gridAvailable": @(estimateView.forecast.gridAvailable),
                 @"detail": estimateView.forecast.detail ?: @"",
                 @"asOf": EBJSONDateString(estimateView.forecast.asOf) ?: NSNull.null,
                 @"weatherFetchedAt": EBJSONDateString(estimateView.forecast.weatherFetchedAt) ?: NSNull.null,
                 @"carFinishesAt": EBJSONDateString(estimateView.forecast.carFinishesAt) ?: NSNull.null,
                 @"intervalCount": @(estimateView.forecast.rows.count),
+                @"next15Minutes": EBForecastAverage(estimateView.forecast.rows,
+                    estimateView.forecast.asOf, [estimateView.forecast.asOf dateByAddingTimeInterval:900]) ?: @{},
                 @"completionBar": completionBar,
                 @"afterCompletionBar": afterCompletionBar,
             },

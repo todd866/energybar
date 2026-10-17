@@ -37,8 +37,10 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW);
 @property(nonatomic, strong, nullable) EBPowerForecast *forecast;
 /// Hide obsolete projections immediately without I/O or rebuilding cached history.
 - (void)suppressForecast;
+- (void)suppressCarForecast;
+- (void)expireForecastAt:(NSDate *)now;
 @property(nonatomic) NSTimeInterval windowSeconds; // default 12h
-/// Right edge of the chart window. Nil uses the current date.
+/// Observation/forecast boundary. Nil uses the current date.
 @property(nonatomic, copy, nullable) NSDate *referenceDate;
 @end
 

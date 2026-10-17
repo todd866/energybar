@@ -181,7 +181,11 @@ future; 48h: 36h past + 12h future). A measured solar baseline and optionally
 approved hourly Open-Meteo radiation support a conditional PV estimate; household
 load excludes the car. The car projection stops at the same unrounded completion
 instant as the ETA, including a partial final bar. Paused/unplugged states project
-no car charging. Missing or stale inputs leave the projection unavailable.
+no car charging. Solar and home remain available when car telemetry is missing;
+unknown car load leaves dependent grid import/export unavailable. Partial outlooks
+show solar outlines over hatched unknown allocations, with household values in
+interval details. The Now boundary and future region remain even if all forecast
+inputs are unavailable. Each component expires against its own source clock.
 See [forecast implementation](docs/forecast-implementation.md) and
 [idle site-meter findings](docs/idle-meter-data.md).
 
