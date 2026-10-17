@@ -50,14 +50,21 @@ int main(void){@autoreleasepool{
     Check(!EBStatisticsMerge(bad,@"synthetic-source",@[],@[],now,&error),@"corrupt stored numbers fail closed");
 
     EBFroniusPVInterval *(^PV)(NSString *,double,double,double)=^EBFroniusPVInterval *(NSString *device,double offset,double span,double wh){return [[EBFroniusPVInterval alloc] initWithDeviceID:device deviceType:nil anchor:At(midnight,offset) spanSeconds:span energyWh:wh];};
-    NSArray *solar=@[PV(@"synthetic-a",0,300,10),PV(@"synthetic-a",300,300,100),PV(@"synthetic-a",400,300,999),PV(@"synthetic-a",600,300,100),PV(@"synthetic-b",300,300,50)];
+    NSArray *solar=@[PV(@"synthetic-a",0,300,10),PV(@"synthetic-a",300,300,100),PV(@"synthetic-a",400,300,30),PV(@"synthetic-a",600,300,100),PV(@"synthetic-b",300,300,50)];
     NSDictionary *pvDoc=Merge(nil,@[],solar,At(midnight,1000));
     NSDictionary *sun=Report(pvDoc,At(midnight,1000)).days[0][@"solar"];
-    Check(Close([sun[@"wh"] doubleValue],250),@"solar excludes ambiguous boundary and overlapping intervals");
-    Check(Close([sun[@"coverage"] doubleValue],450),@"solar coverage averages device seconds");
+    Check(Close([sun[@"wh"] doubleValue],280),@"solar excludes ambiguous boundaries but retains distinct source-register identities");
+    Check(Close([sun[@"coverage"] doubleValue],450),@"solar coverage unions overlapping time and averages device seconds");
     Check([sun[@"partial"] boolValue],@"solar register never claims complete site coverage");
     Check(![[pvDoc description] containsString:@"synthetic-a"],@"device identity is hashed in durable store");
     Check([Merge(pvDoc,@[],solar,At(midnight,1000))[@"solar"] count]==5,@"solar archive idempotent merge");
+    NSArray *jitter=@[PV(@"synthetic-a",300,297,10),PV(@"synthetic-a",600,302,20),
+                       PV(@"synthetic-a",900,297,30),PV(@"synthetic-a",1200,302,40)];
+    NSDate *jitterNow=At(midnight,1502);
+    NSDictionary *jitterSun=Report(Merge(nil,@[],jitter,jitterNow),jitterNow).days[0][@"solar"];
+    EBFroniusPVArchiveSummary existing=EBFroniusArchiveSummarizePV(jitter,midnight,jitterNow);
+    Check(Close([jitterSun[@"wh"] doubleValue],100)&&Close(existing.energyWh,100),@"logger duration jitter retains all exact energy records like the existing archive reader");
+    Check(Close([jitterSun[@"coverage"] doubleValue],1194),@"jitter coverage uses conservative union instead of dropping every other reading");
 
     NSMutableArray *wholeDay=[NSMutableArray array];NSDate *dayStart=At(midnight,-86400);
     for(int i=0;i<=288;i++)[wholeDay addObject:Row(At(dayStart,i*300),@500,@0)];

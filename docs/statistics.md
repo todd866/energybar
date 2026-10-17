@@ -44,8 +44,11 @@ Zero-crossings retain both gross import and gross export instead of netting them
 Solar uses the inverter's energy register, not integration of forecast or chart
 bars. Because the API's interval anchor direction is not established, a record is
 included only when both possible start/end interpretations fit inside one day.
-Overlapping records are excluded. Coverage is average device-hours across observed
-inverter devices; it does not establish complete site coverage. Weekly totals sum
+Distinct source records are summed once by device and anchor, matching the existing
+archive reader. Small differences between anchor spacing and recorder duration do
+not discard energy. Coverage unions recorded time under both possible anchor
+directions and takes the smaller result, then averages across observed inverter
+devices; it does not establish complete site coverage. Weekly totals sum
 the same conservative daily records, including their boundary omissions.
 
 The first merge can recover only the existing roughly 48-hour caches. Days before

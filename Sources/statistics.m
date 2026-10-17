@@ -142,6 +142,16 @@ static void Add(NSMutableDictionary *m,double wh,double seconds,double latest) {
     m[@"wh"]=@([m[@"wh"] doubleValue]+wh);m[@"coverage"]=@([m[@"coverage"] doubleValue]+seconds);
     m[@"latest"]=@(fmax([m[@"latest"] doubleValue],latest));
 }
+static double CoveredSeconds(NSArray<NSArray<NSNumber *> *> *intervals) {
+    NSArray *ordered=[intervals sortedArrayUsingComparator:^NSComparisonResult(NSArray *a,NSArray *b){return [a[0] compare:b[0]];}];
+    double total=0,start=0,end=0;BOOL have=NO;
+    for(NSArray *interval in ordered){
+        double a=[interval[0] doubleValue],b=[interval[1] doubleValue];
+        if(have && a>end){total+=end-start;have=NO;}
+        if(!have){start=a;end=b;have=YES;}else end=fmax(end,b);
+    }
+    return total+(have?end-start:0);
+}
 EBStatisticsReport *EBStatisticsSummarize(NSDictionary *document, NSDate *now,NSTimeZone *timeZone) {
     EBStatisticsReport *report=[EBStatisticsReport new];report.asOf=now;report.timeZoneName=timeZone.name;
     NSCalendar *cal=[NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];cal.timeZone=timeZone;cal.firstWeekday=2;cal.minimumDaysInFirstWeek=4;
@@ -176,22 +186,33 @@ EBStatisticsReport *EBStatisticsSummarize(NSDictionary *document, NSDate *now,NS
             cursor=end;
         }
     }
-    NSMutableSet *devices=[NSMutableSet set];NSMutableDictionary *previous=[NSMutableDictionary dictionary];
+    NSMutableSet *devices=[NSMutableSet set];NSMutableDictionary *solarCoverage=[NSMutableDictionary dictionary];
     for(NSDictionary *r in document[@"solar"]){
         [devices addObject:r[@"device"]];
-        double t=[r[@"t"] doubleValue],span=[r[@"span"] doubleValue];NSDictionary *last=previous[r[@"device"]];
-        if(last && t-[last[@"t"] doubleValue]<fmax(span,[last[@"span"] doubleValue]))continue;
-        previous[r[@"device"]]=r;
+        double t=[r[@"t"] doubleValue],span=[r[@"span"] doubleValue];
         NSDate *day=[cal startOfDayForDate:[NSDate dateWithTimeIntervalSince1970:t]];NSMutableDictionary *p=days[day];
         // Unknown anchor direction: include only whole records inside BOTH possible interpretations.
         if(!p||t-span<[p[@"start"] timeIntervalSince1970]||t+span>[p[@"end"] timeIntervalSince1970])continue;
-        Add(p[@"solar"],[r[@"wh"] doubleValue],span,t);
+        // The archive's identity is device+anchor, already deduplicated at merge.
+        // Logger duration jitter must not discard a distinct energy-register record.
+        Add(p[@"solar"],[r[@"wh"] doubleValue],0,t);
+        if(!solarCoverage[day])solarCoverage[day]=[NSMutableDictionary dictionary];
+        NSMutableDictionary *byDevice=solarCoverage[day];
+        if(!byDevice[r[@"device"]])byDevice[r[@"device"]]=@[[NSMutableArray array],[NSMutableArray array]];
+        NSArray *interpretations=byDevice[r[@"device"]];
+        [interpretations[0] addObject:@[@(t-span),@(t)]];
+        [interpretations[1] addObject:@[@(t),@(t+span)]];
     }
     NSArray *ordered=[days.allKeys sortedArrayUsingSelector:@selector(compare:)];NSMutableArray *daily=[NSMutableArray array];
     NSMutableDictionary<NSDate *,NSMutableDictionary *> *weeks=[NSMutableDictionary dictionary];
     for(NSDate *date in ordered){
         NSMutableDictionary *day=days[date];NSMutableDictionary *sun=day[@"solar"];
-        sun[@"coverage"]=@([sun[@"coverage"] doubleValue]/fmax(1,devices.count));sun[@"deviceCount"]=@(devices.count);
+        double recorded=0;
+        for(NSArray *interpretations in [solarCoverage[date] allValues])
+            recorded+=fmin(CoveredSeconds(interpretations[0]),CoveredSeconds(interpretations[1]));
+        // Union overlapping time, and use the smaller total of both possible
+        // anchor directions. Energy remains the sum of exact source records.
+        sun[@"coverage"]=@(recorded/fmax(1,devices.count));sun[@"deviceCount"]=@(devices.count);
         NSDate *weekStart=nil;
         [cal rangeOfUnit:NSCalendarUnitWeekOfYear startDate:&weekStart interval:NULL forDate:date];
         NSMutableDictionary *week=weeks[weekStart];
