@@ -113,6 +113,10 @@ static EBSnapshotView *EBState(NSString *name) {
         if ([name isEqual:@"forecast-midnight"]) s.referenceDate=[EBFixedDate() dateByAddingTimeInterval:-4*3600+60];
         if ([name isEqual:@"forecast-late-day"]) s.referenceDate=[EBFixedDate() dateByAddingTimeInterval:20*3600-60];
         if ([name isEqual:@"forecast-split-now"]) s.referenceDate=[EBFixedDate() dateByAddingTimeInterval:7*60];
+        if ([name isEqual:@"forecast-dst-fall"])
+            s.referenceDate=[[NSISO8601DateFormatter new] dateFromString:@"2026-11-01T12:07:00-08:00"];
+        if ([name isEqual:@"forecast-dst-spring"])
+            s.referenceDate=[[NSISO8601DateFormatter new] dateFromString:@"2026-03-08T12:07:00-07:00"];
         s.pvAt=s.evnexAt=s.gridAsOf=s.vehicleSOCAt=s.referenceDate;
         s.forecast=EBSyntheticForecast(name,s.referenceDate);
         if (![name isEqual:@"forecast-charging"] && ![name isEqual:@"forecast-expired-car"]) {
@@ -823,6 +827,7 @@ int main(int argc, const char *argv[]) {
                             @"forecast-charging", @"forecast-signed-out", @"forecast-stopped",
                             @"forecast-solar-only", @"forecast-unavailable", @"forecast-expired-car",
                             @"forecast-midnight", @"forecast-late-day", @"forecast-split-now",
+                            @"forecast-dst-fall", @"forecast-dst-spring",
                             @"battery-unknown", @"battery-reported-full", @"battery-last-full", @"battery-last-unplugged"];
         NSString *renderDir = [EBRepoRoot() stringByAppendingPathComponent:@"build/render"];
         NSString *snapDir = [EBRepoRoot() stringByAppendingPathComponent:@"Tests/snapshots"];
@@ -851,6 +856,8 @@ int main(int argc, const char *argv[]) {
 
         for (NSString *name in states) {
             for (int dark = 0; dark < 2; dark++) {
+                [NSTimeZone setDefaultTimeZone:[name hasPrefix:@"forecast-dst-"]
+                    ? [NSTimeZone timeZoneWithName:@"America/Los_Angeles"] : [NSTimeZone timeZoneForSecondsFromGMT:0]];
                 EBPopoverViews *pv = EBBuildPopover(nil);
                 EBSnapshotView *snap = EBState(name);
                 NSArray *samp = [name isEqualToString:@"cold-start"] ? @[] : samples;
@@ -870,7 +877,8 @@ int main(int argc, const char *argv[]) {
                     NSInteger current=[pv.chart barIndexForDate:snap.referenceDate];
                     NSString *past=[pv.chart detailsForBar:current-1],*future=[pv.chart detailsForBar:current];
                     EBExpect([[pv.chart displayStart] isEqual:[NSCalendar.currentCalendar startOfDayForDate:snap.referenceDate]] &&
-                             [[pv.chart displayEnd] timeIntervalSinceDate:[pv.chart displayStart]]==86400,
+                             [[pv.chart displayEnd] timeIntervalSinceDate:[pv.chart displayStart]]==
+                                 ([name isEqual:@"forecast-dst-fall"] ? 25*3600 : [name isEqual:@"forecast-dst-spring"] ? 23*3600 : 86400),
                              "Today covers midnight to midnight, including all remaining daylight");
                     EBExpect(![past hasPrefix:@"Forecast"] && [future hasPrefix:@"Forecast"],
                              "Now must separate observed and projected bars even with unavailable data");

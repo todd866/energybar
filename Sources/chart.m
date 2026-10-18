@@ -526,7 +526,11 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
             NSRectFillUsingOperation(NSMakeRect(x, plot.origin.y, 1, plot.size.height),
                                      NSCompositingOperationSourceOver);
         }
-        tick = [cal dateByAddingUnit:NSCalendarUnitHour value:stepHours toDate:tick options:0];
+        if (self.windowSeconds <= 24*3600) {
+            // Local-clock ticks stay at 00/06/12/18 across a DST transition.
+            comps.hour += stepHours;
+            tick = [cal dateFromComponents:comps];
+        } else tick = [cal dateByAddingUnit:NSCalendarUnitHour value:stepHours toDate:tick options:0];
     }
     if (self.windowSeconds <= 24*3600 && (any || [self hasForecast])) {
         NSString *endLabel=@"24:00";
