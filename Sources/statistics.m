@@ -93,8 +93,7 @@ NSDictionary *EBStatisticsMerge(NSDictionary *previous, NSString *sourceID, NSAr
         @"meter":Bounded(previous[@"meter"],meter,NO,now),@"solar":Bounded(previous[@"solar"],pv,YES,now)};
 }
 
-NSDictionary *EBStatisticsUpdate(NSString *path, NSString *sourceID, NSArray *samples,
-    NSArray<EBFroniusPVInterval *> *solar, NSDate *now, NSError **error) {
+NSDictionary *EBStatisticsLoad(NSString *path,NSString *sourceID,NSError **error) {
     NSFileManager *fm=NSFileManager.defaultManager;
     NSDictionary *previous=nil;
     if ([fm fileExistsAtPath:path]) {
@@ -107,6 +106,14 @@ NSDictionary *EBStatisticsUpdate(NSString *path, NSString *sourceID, NSArray *sa
         previous=data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:error] : nil;
         if (!previous) { if (error) *error=Problem(@"Statistics history is unreadable; preserved unchanged."); return nil; }
     }
+    if(previous&&!ValidDocument(previous,sourceID)) { if(error)*error=Problem(@"Statistics history is invalid or belongs to another source; preserved unchanged.");return nil; }
+    return previous;
+}
+NSDictionary *EBStatisticsUpdate(NSString *path, NSString *sourceID, NSArray *samples,
+    NSArray<EBFroniusPVInterval *> *solar, NSDate *now, NSError **error) {
+    NSFileManager *fm=NSFileManager.defaultManager;
+    NSDictionary *previous=EBStatisticsLoad(path,sourceID,error);
+    if(!previous&&[fm fileExistsAtPath:path])return nil;
     NSDictionary *merged=EBStatisticsMerge(previous,sourceID,samples,solar,now,error);
     if (!merged) return nil;
     NSData *data=[NSJSONSerialization dataWithJSONObject:merged options:NSJSONWritingSortedKeys error:error];

@@ -69,3 +69,5 @@ Checks cover midnight/DST, gross directions, gaps, independent series, correctio
 deduplication, archive overlap/boundaries, count/time bounds, source mismatch,
 corrupt-file preservation, private file modes, restart, empty startup and prepared
 navigation. Full builds also run the statistics tests and optional sanitizers.
+
+The adaptive forecasting foundation is described in [adaptive-forecasting.md](adaptive-forecasting.md). Its measured PV, session summaries and immutable forecast vintages live in a separate private ledger; forecast values never enter measured daily totals.

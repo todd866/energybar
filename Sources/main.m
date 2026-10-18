@@ -18,6 +18,7 @@
 #import "vehicle.h"
 #import "statistics.h"
 #import "statistics_view.h"
+#import "learning.h"
 
 static NSString * const EBVersion = @"0.5.4";
 static NSString * const EBCognitoClientId = @"rol3lsv2vg41783550i18r7vi";
@@ -620,6 +621,9 @@ static NSColor *EBBarColor(EBBarState st, NSString *glyph) {
 /// Access document/update clock only on EBStoreQueue; publish prepared report on main.
 @property(copy) NSDate *statisticsNextUpdateAt;
 @property(copy) NSDictionary *statisticsDocument;
+@property(copy) NSDictionary *learningModel;
+@property(copy) NSString *learningError;
+@property(strong) NSMutableArray<NSDictionary *> *learningPV;
 @property(strong) EBStatisticsReport *statisticsReport;
 @property double popoverOpenStartedAt;
 @property double popoverShownMilliseconds;
@@ -679,10 +683,11 @@ static NSArray<NSDictionary *> *EBChartPVRows(NSArray<EBFroniusPVInterval *> *ar
 }
 
 static EBPowerForecast *EBForecastForSnapshot(EBSnapshotView *vm, NSArray *solarRows,
-                                              NSArray *samples, NSDictionary *weather) {
+                                              NSArray *samples, NSDictionary *weather, NSDictionary *learnedModel) {
     EBPowerForecastInput *input = [EBPowerForecastInput new];
     input.now = vm.referenceDate ?: [NSDate date];
     input.solarSamples = solarRows; input.meterSamples = samples; input.weather = weather;
+    input.learnedModel = learnedModel;
     input.inverterW = vm.inverterW; input.chargerW = vm.chargeW;
     input.chargerStatusAt = vm.evnexAt;
     input.chargerMeterAt = vm.gridAsOf;
@@ -1019,6 +1024,12 @@ static NSDictionary *EBForecastCache(void) {
                 s.sessionError = self.snap.sessionError;
             }
             self.snap = s;
+            if (!self.learningPV) self.learningPV = [NSMutableArray array];
+            NSDate *learningAt = s.pvOK && s.pvAt ? s.pvAt : sampleAt;
+            [self.learningPV addObject:s.pvOK ? @{@"t":learningAt,@"pvW":@(s.pvW)} : @{@"t":learningAt}];
+            NSDate *learningCutoff=[sampleAt dateByAddingTimeInterval:-3*3600];
+            while (self.learningPV.count && [self.learningPV[0][@"t"] compare:learningCutoff]==NSOrderedAscending)
+                [self.learningPV removeObjectAtIndex:0];
             if (s.pvOK) {
                 if (!self.livePV) self.livePV = [NSMutableArray array];
                 NSDate *at = s.pvAt ?: [NSDate date];
@@ -1133,6 +1144,8 @@ static NSDictionary *EBForecastCache(void) {
         (unsigned long)self.config.froniusAPI.length, self.config.froniusAPI ?: @"", self.config.chargePointId ?: @""]);
     NSArray *archive = self.froniusArchive ?: @[];
     NSArray *livePV = [self.livePV copy] ?: @[];
+    NSArray *learningPV = [self.learningPV copy] ?: @[];
+    NSString *learningPath = statisticsPath.length ? [statisticsPath.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"learning.json"] : nil;
     // Store reads are serialized with writes; none runs on the opening action.
     dispatch_async(EBStoreQueue(), ^{
         NSArray *samples = EBStoreLoad(samplesPath, EBStoreMaxAge);
@@ -1142,6 +1155,8 @@ static NSDictionary *EBForecastCache(void) {
         vm.tariffError = tariffError.localizedDescription;
         NSCalendar *calendar = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
         calendar.timeZone = tariff.timeZone ?: NSTimeZone.localTimeZone;
+        BOOL learningDue=NO;
+        NSDictionary *learningLedger=nil;
         if (statisticsPath.length && (!self.statisticsNextUpdateAt || [self.statisticsNextUpdateAt compare:now] != NSOrderedDescending)) {
             self.statisticsNextUpdateAt = [now dateByAddingTimeInterval:300];
             NSError *statisticsError = nil;
@@ -1152,6 +1167,17 @@ static NSDictionary *EBForecastCache(void) {
             EBStatisticsReport *report = EBStatisticsSummarize(document ?: @{}, now, calendar.timeZone);
             report.error = statisticsError.localizedDescription;
             dispatch_async(dispatch_get_main_queue(), ^{ self.statisticsReport = report; });
+            NSError *learningError=nil;
+            NSDictionary *previous=EBLearningLoad(learningPath,statisticsSource,&learningError);
+            if (!learningError && !statisticsError) {
+                learningLedger=EBLearningObserve(previous,statisticsSource,learningPV,snapshot.sessionHistory.sessions ?: @[],now,&learningError);
+                if (learningLedger) {
+                    self.learningModel=EBLearningModel(document,learningLedger,now,calendar.timeZone);
+                    learningDue=YES;
+                }
+            }
+            self.learningError=(learningError ?: statisticsError).localizedDescription;
+            if (self.learningError) self.learningModel=nil;
         }
         NSDate *day = [calendar startOfDayForDate:now];
         vm.today = EBStoreIntegrateSince(samples, day, now);
@@ -1209,7 +1235,16 @@ static NSDictionary *EBForecastCache(void) {
                 || self.vehicle.socInvalidatedAt != nil || vm.vehicleLastKnownSOC != nil;
             vm.referenceDate = [NSDate date];
             dispatch_async(EBStoreQueue(), ^{
-                vm.forecast = EBForecastForSnapshot(vm, solarRows, samples, weather);
+                vm.forecast = EBForecastForSnapshot(vm, solarRows, samples, weather, self.learningModel);
+                if (learningDue) {
+                    EBChargeEstimate *eta=EBChargeEstimateForSnapshot(vm,samples);
+                    NSDictionary *context=@{@"socSource":vm.vehicleSOCSource ?: @"unknown",@"socEstimated":@(vm.vehicleSOCIsEstimate),
+                        @"socAvailable":@(vm.vehicleHasSOC),@"targetKnown":@(eta.targetKnown),@"etaAvailable":@(eta.available)};
+                    NSDictionary *recorded=EBLearningRecord(learningLedger,self.statisticsDocument,vm.forecast,context,[NSDate date]);
+                    NSError *learningError=nil;
+                    if (!EBLearningSave(learningPath,recorded,&learningError)) self.learningError=learningError.localizedDescription;
+                }
+                vm.forecast.learningError=self.learningError;
                 dispatch_async(dispatch_get_main_queue(), ^{
                     self.presentationInFlight = NO;
                     if (self.presentationPending || self.snap != snapshot) {
@@ -1745,8 +1780,15 @@ static int EBDump(BOOL jsonMode, NSString *renderPrefix) {
     estimateView.pvArchiveAvailable = archiveDay.hasData; estimateView.pvArchiveWh = archiveDay.energyWh;
     estimateView.pvArchiveIntervalCount = archiveDay.intervalCount;
     NSArray *dumpLivePV = s.pvOK && s.pvAt ? @[@{@"t":s.pvAt,@"pvW":@(s.pvW)}] : @[];
+    NSString *learningSource=EBStableSourceID(@"statistics",[NSString stringWithFormat:@"%lu:%@/%@",
+        (unsigned long)c.froniusAPI.length,c.froniusAPI ?: @"",c.chargePointId ?: @""]);
+    NSError *learningError=nil,*statisticsError=nil;
+    NSDictionary *learningLedger=EBLearningLoad([c.statisticsPath.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"learning.json"],learningSource,&learningError);
+    NSDictionary *statisticsDocument=EBStatisticsLoad(c.statisticsPath,learningSource,&statisticsError);
+    NSDictionary *learnedModel=!learningError && !statisticsError ? EBLearningModel(statisticsDocument ?: @{},learningLedger ?: @{},dumpNow,billingCalendar.timeZone) : nil;
     estimateView.forecast = EBForecastForSnapshot(estimateView,
-        EBChartPVRows(archiveIntervals ?: @[], dumpLivePV), samples, EBForecastCache());
+        EBChartPVRows(archiveIntervals ?: @[], dumpLivePV), samples, EBForecastCache(), learnedModel);
+    estimateView.forecast.learningError=(learningError ?: statisticsError).localizedDescription;
     if (renderPrefix.length && !EBRenderLive(estimateView,
         [samples arrayByAddingObjectsFromArray:EBChartPVRows(archiveIntervals ?: @[], dumpLivePV)], renderPrefix)) {
         fprintf(stderr, "Live render failed\n"); return 2;
@@ -1777,7 +1819,7 @@ static int EBDump(BOOL jsonMode, NSString *renderPrefix) {
         NSDate *todayStart=[chartCalendar startOfDayForDate:dumpNow];
         NSDate *todayEnd=[chartCalendar dateByAddingUnit:NSCalendarUnitDay value:1 toDate:todayStart options:0];
         NSDictionary *out = @{
-            @"schemaVersion": @9,
+            @"schemaVersion": @10,
             @"chargingEstimate": chargeEstimate.dictionaryValue,
             @"forecast": @{
                 @"available": @(estimateView.forecast.available),
@@ -1786,6 +1828,8 @@ static int EBDump(BOOL jsonMode, NSString *renderPrefix) {
                 @"carAvailable": @(estimateView.forecast.carAvailable),
                 @"gridAvailable": @(estimateView.forecast.gridAvailable),
                 @"detail": estimateView.forecast.detail ?: @"",
+                @"learning": estimateView.forecast.learning ?: @{},
+                @"learningError": estimateView.forecast.learningError ?: NSNull.null,
                 @"asOf": EBJSONDateString(estimateView.forecast.asOf) ?: NSNull.null,
                 @"weatherFetchedAt": EBJSONDateString(estimateView.forecast.weatherFetchedAt) ?: NSNull.null,
                 @"carFinishesAt": EBJSONDateString(estimateView.forecast.carFinishesAt) ?: NSNull.null,

@@ -115,5 +115,22 @@ int main(void) { @autoreleasepool {
     Expect(!EBForecastRequestURL(@{@"enabled":@YES,@"provider":@"Open-Meteo",@"latitude":@1,@"longitude":@2}),"one-off permission is not recurring consent");
     NSURL *request=EBForecastRequestURL(@{@"enabled":@YES,@"provider":@"Open-Meteo",@"consentVersion":@1,@"latitude":@(12.34567),@"longitude":@(98.76543)});
     Expect([request.host isEqual:@"api.open-meteo.com"] && [request.absoluteString containsString:@"latitude=12.346"] && [request.absoluteString containsString:@"longitude=98.765"],"request sends only the rounded position to the fixed provider");
+    i=Input();
+    NSCalendar *learnCalendar=[NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];learnCalendar.timeZone=[NSTimeZone timeZoneForSecondsFromGMT:0];
+    NSInteger weekday=[learnCalendar component:NSCalendarUnitWeekday fromDate:i.now];
+    NSString *key=[NSString stringWithFormat:@"%@/%ld",weekday==1||weekday==7?@"weekend":@"weekday",(long)[learnCalendar component:NSCalendarUnitHour fromDate:i.now]];
+    i.learnedModel=@{@"asOf":@(i.now.timeIntervalSince1970),@"timeZone":@"UTC",@"homeBuckets":@{key:@{@"median":@800,@"p10":@500,@"p90":@1200}},
+        @"solarCalibration":@{@"available":@YES,@"factor":@.8,@"lowFactor":@.5,@"highFactor":@1.2}};
+    f=EBBuildPowerForecast(i);NSDictionary *learned=EBForecastAverage(f.rows,i.now,At(i.now,900));
+    Expect([learned[@"homeW"] intValue]==800 && [learned[@"pvW"] intValue]==3200 && [learned[@"basePvW"] intValue]==4000,"learned home and solar correction preserve uncorrected solar vintage");
+    Expect([learned[@"supplyW"] intValue]==1100,"grid uses learned home rather than recent fallback");
+    Expect([learned[@"supplyLowW"] doubleValue]<=[learned[@"supplyW"] doubleValue]&&[learned[@"supplyHighW"] doubleValue]>=[learned[@"supplyW"] doubleValue],"conditional grid range encloses central balance");
+    Expect([EBForecastAverage(f.rows,At(i.now,3600),At(i.now,4500))[@"homeW"] intValue]==1000,"untrained hour uses existing recent fallback");
+    i.meterSamples=@[];f=EBBuildPowerForecast(i);
+    Expect(f.homeAvailable && !EBForecastAverage(f.rows,At(i.now,3600),At(i.now,4500))[@"homeW"],"without recent history untrained hours remain absent");
+    i.chargeEstimate.available=NO;i.chargeEstimate.state=@"battery-unavailable";f=EBBuildPowerForecast(i);
+    Expect(f.homeAvailable&&f.solarAvailable&&!f.gridAvailable&&!EBForecastAverage(f.rows,i.now,At(i.now,900))[@"supplyLowW"],"learned charging history cannot fill unknown current battery or grid requirements");
+    NSMutableDictionary *expired=[i.learnedModel mutableCopy];expired[@"asOf"]=@(i.now.timeIntervalSince1970-601);i.learnedModel=expired;f=EBBuildPowerForecast(i);
+    Expect(!f.homeAvailable&&!f.learning,"stale prepared model cannot survive indefinitely");
     printf("forecast boundary tests: %s\n",fails?"FAILED":"ok");return fails?1:0;
 } }

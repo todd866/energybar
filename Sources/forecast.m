@@ -48,7 +48,7 @@ NSDictionary *EBForecastAverage(NSArray<NSDictionary *> *rows, NSDate *start, NS
     if (!start || !end) return nil;
     double seconds=[end timeIntervalSinceDate:start], coverage=0;
     if (seconds<=0) return nil;
-    NSArray *keys=@[@"pvW",@"homeW",@"chargeW",@"supplyW",@"importW",@"exportW",@"carSolarW",@"carGridW",@"homeSolarW",@"homeGridW",@"pvLowW",@"pvHighW"];
+    NSArray *keys=@[@"pvW",@"basePvW",@"homeW",@"chargeW",@"supplyW",@"importW",@"exportW",@"carSolarW",@"carGridW",@"homeSolarW",@"homeGridW",@"pvLowW",@"pvHighW",@"homeLowW",@"homeHighW",@"supplyLowW",@"supplyHighW",@"importLowW",@"importHighW",@"exportLowW",@"exportHighW"];
     NSMutableDictionary *sums=[NSMutableDictionary dictionary],*covered=[NSMutableDictionary dictionary];
     for (NSDictionary *r in rows) {
         NSDate *a=r[@"start"],*b=r[@"end"];
@@ -70,6 +70,11 @@ NSDictionary *EBForecastAverage(NSArray<NSDictionary *> *rows, NSDate *start, NS
 }
 EBPowerForecast *EBBuildPowerForecast(EBPowerForecastInput *i) {
     EBPowerForecast *out=[EBPowerForecast new]; out.asOf=i.now;
+    // Models expire independently from the live weather/status inputs.
+    NSDictionary *learned=i.learnedModel;
+    if (!Number(learned[@"asOf"]) || i.now.timeIntervalSince1970-[learned[@"asOf"] doubleValue]<0 ||
+        i.now.timeIntervalSince1970-[learned[@"asOf"] doubleValue]>600) learned=nil;
+    out.learning=learned;
     out.weatherFetchedAt=ParsedDate(i.weather[@"fetchedAt"]);
     NSString *solarIssue=nil,*homeIssue=nil,*carIssue=nil;
     if (!Fresh(out.weatherFetchedAt,i.now,7200)) solarIssue=@"weather missing or over 2 hours old";
@@ -146,6 +151,15 @@ EBPowerForecast *EBBuildPowerForecast(EBPowerForecastInput *i) {
     if (home.count<12 || homeHours.count<2 || !Fresh(latestHome,i.now,3600)) homeIssue=@"insufficient aligned household history";
     else { out.homeAvailable=YES; out.homeValidUntil=[latestHome dateByAddingTimeInterval:3600]; }
     double homeW=Median(home),carW=0;
+    NSCalendar *learningCalendar=[NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
+    learningCalendar.timeZone=[NSTimeZone timeZoneWithName:learned[@"timeZone"] ?: @""] ?: NSTimeZone.localTimeZone;
+    NSDictionary *homeBuckets=learned[@"homeBuckets"];
+    BOOL learnedHome=homeBuckets.count>0;
+    if (learnedHome) {
+        out.homeAvailable=YES;
+        NSDate *modelEnd=[NSDate dateWithTimeIntervalSince1970:[learned[@"asOf"] doubleValue]+600];
+        out.homeValidUntil=out.homeValidUntil ? [out.homeValidUntil earlierDate:modelEnd] : modelEnd;
+    }
     BOOL charging=i.chargerState==EBChargerStateCharging || i.chargerState==EBChargerStateSolar;
     if (!Fresh(i.chargerStatusAt,i.now,150) || i.chargerState==EBChargerStateUnknown || i.chargerState==EBChargerStateFault)
         carIssue=@"charger state unknown, faulty or stale";
@@ -175,6 +189,8 @@ EBPowerForecast *EBBuildPowerForecast(EBPowerForecastInput *i) {
     for (NSDictionary *h in hours) for (NSString *key in @[@"start",@"end"]) {
         double t=[h[key] doubleValue]; if (t>now&&t<horizon) [bounds addObject:@(t)];
     }
+    // Household bucket edges still exist when weather is unavailable.
+    if (learnedHome) for (double edge=(floor(now/3600)+1)*3600;edge<horizon;edge+=3600) [bounds addObject:@(edge)];
     if (out.carFinishesAt && out.carFinishesAt.timeIntervalSince1970<horizon) [bounds addObject:@(out.carFinishesAt.timeIntervalSince1970)];
     NSArray *edges=[bounds.allObjects sortedArrayUsingSelector:@selector(compare:)];
     for (NSUInteger k=0;k+1<edges.count;k++) {
@@ -186,20 +202,53 @@ EBPowerForecast *EBBuildPowerForecast(EBPowerForecastInput *i) {
             r[@"pvW"]=@(fmin(i.inverterW,ratio*[weatherHour[@"ghi"] doubleValue]));
             r[@"pvLowW"]=@(fmin(i.inverterW,low*[weatherHour[@"ghi"] doubleValue]));
             r[@"pvHighW"]=@(fmin(i.inverterW,high*[weatherHour[@"ghi"] doubleValue]));
+            r[@"basePvW"]=r[@"pvW"];
+            NSDictionary *calibration=learned[@"solarCalibration"];
+            if ([calibration[@"available"] boolValue]) {
+                double base=[r[@"pvW"] doubleValue];
+                r[@"pvW"]=@(fmin(i.inverterW,base*[calibration[@"factor"] doubleValue]));
+                // Keep the existing broad weather scenario and widen it when
+                // observed forecast errors show a larger spread.
+                r[@"pvLowW"]=@(fmin([r[@"pvLowW"] doubleValue],fmin([r[@"pvW"] doubleValue],base*[calibration[@"lowFactor"] doubleValue])));
+                r[@"pvHighW"]=@(fmin(i.inverterW,fmax([r[@"pvHighW"] doubleValue],fmax([r[@"pvW"] doubleValue],base*[calibration[@"highFactor"] doubleValue]))));
+            }
         }
-        if (out.homeAvailable) r[@"homeW"]=@(homeW);
+        NSDate *bucketStart=[NSDate dateWithTimeIntervalSince1970:floor(a/3600)*3600];
+        NSInteger weekday=[learningCalendar component:NSCalendarUnitWeekday fromDate:bucketStart];
+        NSString *bucketKey=[NSString stringWithFormat:@"%@/%ld",weekday==1||weekday==7?@"weekend":@"weekday",(long)[learningCalendar component:NSCalendarUnitHour fromDate:bucketStart]];
+        NSDictionary *bucket=homeBuckets[bucketKey];
+        if (bucket) {
+            r[@"homeW"]=bucket[@"median"];r[@"homeLowW"]=bucket[@"p10"];r[@"homeHighW"]=bucket[@"p90"];
+        } else if (!homeIssue) {
+            r[@"homeW"]=@(homeW);
+            r[@"homeLowW"]=[home valueForKeyPath:@"@min.self"];
+            r[@"homeHighW"]=[home valueForKeyPath:@"@max.self"];
+        }
         if (out.carAvailable) r[@"chargeW"]=@(carW>0?EBForecastCarMeanW(carW,i.now,out.carFinishesAt,start,end):0);
         if (r[@"pvW"] && r[@"homeW"] && r[@"chargeW"])
-            [r addEntriesFromDictionary:EBForecastBalance([r[@"pvW"] doubleValue],homeW,[r[@"chargeW"] doubleValue])];
+            [r addEntriesFromDictionary:EBForecastBalance([r[@"pvW"] doubleValue],[r[@"homeW"] doubleValue],[r[@"chargeW"] doubleValue])];
+        if (r[@"supplyW"] && r[@"homeLowW"] && r[@"pvHighW"]) {
+            double netLow=[r[@"homeLowW"] doubleValue]+[r[@"chargeW"] doubleValue]-[r[@"pvHighW"] doubleValue];
+            double netHigh=[r[@"homeHighW"] doubleValue]+[r[@"chargeW"] doubleValue]-[r[@"pvLowW"] doubleValue];
+            r[@"supplyLowW"]=@(netLow);r[@"supplyHighW"]=@(netHigh);
+            r[@"importLowW"]=@(fmax(0,netLow));r[@"importHighW"]=@(fmax(0,netHigh));
+            r[@"exportLowW"]=@(fmax(0,-netHigh));r[@"exportHighW"]=@(fmax(0,-netLow));
+        }
         if (!r.count) continue;
         r[@"start"]=start; r[@"end"]=end; [rows addObject:r];
     }
     out.rows=rows; out.available=rows.count>0;
+    if (learnedHome) {
+        out.homeAvailable=NO;out.gridAvailable=NO;
+        for (NSDictionary *r in rows) { if (r[@"homeW"]) out.homeAvailable=YES; if (r[@"supplyW"]) out.gridAvailable=YES; }
+    }
     NSMutableArray *details=[NSMutableArray arrayWithObject:@"Softly filled bars after Now are a conditional forecast, not scheduled controls."];
     if (solarIssue) [details addObject:[@"Solar unavailable · " stringByAppendingString:solarIssue]];
     else [details addObject:@"Solar uses Open-Meteo hourly radiation calibrated to measured PV, capped at the inverter rating; the broad scenario range is not a confidence interval. Roof angles are unverified."];
-    [details addObject:homeIssue ? [@"Home unavailable · " stringByAppendingString:homeIssue]
+    [details addObject:learnedHome ? @"Home uses the weekday/weekend hourly median where at least five covered dates exist; remaining hours use the recent 3-hour residual when available. Ranges show observed spread, conditional on the current car scenario."
+        : homeIssue ? [@"Home unavailable · " stringByAppendingString:homeIssue]
         : @"Home is the recent 3-hour median residual excluding measured car load."];
+    if ([learned[@"solarCalibration"][@"available"] boolValue]) [details addObject:@"Solar correction uses previously saved forecasts scored against later measured PV; no historical weather is substituted."];
     if (carIssue) [details addObject:[@"Car unavailable · " stringByAppendingString:carIssue]];
     else if (carW>0) [details addObject:[NSString stringWithFormat:@"Car holds current AC power until %@; the final interval is partial. Solar throttling, taper or a changed rate may delay completion.",
         i.chargeEstimate.targetKnown?@"the configured display target":@"hypothetical full (vehicle charge limit unknown)"]];

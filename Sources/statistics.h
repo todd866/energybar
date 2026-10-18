@@ -7,6 +7,7 @@ NS_ASSUME_NONNULL_BEGIN
 /// Retains 90 days and at most 50,000 records per source series (16 MiB file limit).
 extern const NSTimeInterval EBStatisticsRetention;
 extern const NSUInteger EBStatisticsRecordLimit;
+NSDictionary * _Nullable EBStatisticsLoad(NSString *path, NSString *sourceID, NSError **error);
 
 @interface EBStatisticsReport : NSObject
 @property(copy) NSArray<NSDictionary *> *days;

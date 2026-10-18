@@ -123,6 +123,34 @@ static int Regression(void) {
     projection=[app.views.chart detailsForBar:[app.views.chart barIndexForDate:vm.referenceDate]];
     Expect([projection containsString:@"Solar — unavailable"] && [projection containsString:@"Home 1.0 kW"],
            "solar expiry retains independently current household baseline");
+    NSString *directory=[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+    app.config.statisticsPath=[directory stringByAppendingPathComponent:@"statistics.json"];
+    app.statisticsNextUpdateAt=nil;
+    NSDate *observation=[NSDate date];
+    app.learningPV=[@[@{@"t":[observation dateByAddingTimeInterval:-60],@"pvW":@1000},
+                      @{@"t":observation,@"pvW":@1100}] mutableCopy];
+    app.snap=Snapshot(1100);app.snap.chargingLogic=@"NoVehicle";
+    [app updatePopoverBody];
+    Expect(SpinUntil(^BOOL{ return !app.presentationInFlight; },3),"real learning preparation finishes off the opening path");
+    NSString *learningPath=[directory stringByAppendingPathComponent:@"learning.json"];
+    NSString *source=EBStableSourceID(@"statistics",@"0:/");NSError *error=nil;
+    NSDictionary *ledger=EBLearningLoad(learningPath,source,&error);
+    Expect(ledger && !error && [ledger[@"pv"] count]>=1,"real controller persists measured PV in private ledger");
+    Expect([ledger[@"vintages"] count]==1 && [ledger[@"vintages"][0][@"prediction"][@"chargeW"] doubleValue]==0,
+           "real controller freezes a future stopped-car scenario without inventing battery needs");
+    Expect([ledger[@"vintages"][0][@"start"] doubleValue]>observation.timeIntervalSince1970,
+           "controller vintage predates its target interval");
+    NSData *unchanged=[NSData dataWithContentsOfFile:learningPath];[app updatePopoverBody];
+    Expect(SpinUntil(^BOOL{ return !app.presentationInFlight; },3),"repeated prepared update completes");
+    Expect([[NSData dataWithContentsOfFile:learningPath] isEqual:unchanged],"learning write cadence is bounded independently of UI updates");
+    [@"corrupt" writeToFile:learningPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    app.statisticsNextUpdateAt=nil;[app updatePopoverBody];
+    Expect(SpinUntil(^BOOL{ return !app.presentationInFlight; },3),"corrupt learning does not block preparation");
+    Expect(app.preparedViewModel.forecast.learningError.length>0 && !app.learningModel,
+           "controller exposes learning storage failure and stops using that model");
+    Expect([[NSString stringWithContentsOfFile:learningPath encoding:NSUTF8StringEncoding error:nil] isEqual:@"corrupt"],
+           "controller preserves corrupt learning history for recovery");
+    [NSFileManager.defaultManager removeItemAtPath:directory error:nil];
     printf("presentation regression: %s; opening with blocked history %.3f ms\n", failures?"FAILED":"ok",openMS);
     return failures?1:0;
 }

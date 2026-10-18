@@ -29,7 +29,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
     -mmacosx-version-min=13.0 \
     -arch arm64 \
     -ISources \
-    Sources/config.m Sources/tariff.m Sources/fixture.m Sources/pure.m Sources/parse.m Sources/store.m Sources/sessions.m Sources/fronius_archive.m Sources/soc.m Sources/chart.m Sources/tiles.m Sources/charge_estimate.m Sources/forecast.m Sources/popover.m Sources/vehicle.m Sources/statistics.m Sources/statistics_view.m Sources/main.m \
+    Sources/config.m Sources/tariff.m Sources/fixture.m Sources/pure.m Sources/parse.m Sources/store.m Sources/sessions.m Sources/fronius_archive.m Sources/soc.m Sources/chart.m Sources/tiles.m Sources/charge_estimate.m Sources/forecast.m Sources/popover.m Sources/vehicle.m Sources/statistics.m Sources/learning.m Sources/statistics_view.m Sources/main.m \
     -framework Cocoa \
     -framework ServiceManagement \
     -o "$APP/Contents/MacOS/Energybar"

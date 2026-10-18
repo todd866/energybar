@@ -7,6 +7,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(copy) NSArray<NSDictionary *> *solarSamples;
 @property(copy) NSArray<NSDictionary *> *meterSamples;
 @property(copy, nullable) NSDictionary *weather;
+@property(copy, nullable) NSDictionary *learnedModel;
 @property double inverterW, chargerW;
 @property EBChargerState chargerState;
 @property(copy, nullable) NSDate *chargerStatusAt;
@@ -20,6 +21,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property(copy, nullable) NSDate *solarValidUntil, *homeValidUntil, *carValidUntil;
 @property BOOL solarAvailable, homeAvailable, carAvailable, gridAvailable;
 @property BOOL available;
+@property(copy, nullable) NSDictionary *learning;
+@property(copy, nullable) NSString *learningError;
 @end
 /// No I/O. Hourly radiation means cover the preceding hour; no future data becomes actual.
 EBPowerForecast *EBBuildPowerForecast(EBPowerForecastInput *input);
