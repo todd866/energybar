@@ -7,6 +7,10 @@
 
 @interface EBChartView (DetailsTesting)
 - (NSString *)detailsForBar:(NSInteger)i;
+- (NSDate *)displayStart;
+- (NSDate *)displayEnd;
+- (NSTimeInterval)displayDuration;
+- (NSInteger)barIndexForDate:(NSDate *)date;
 @end
 
 static int gFails = 0;
@@ -61,8 +65,8 @@ static NSArray *EBDaylightSamples(NSDate *now, NSTimeInterval window) {
     return rows;
 }
 
-static EBPowerForecast *EBSyntheticForecast(NSString *name) {
-    EBPowerForecastInput *i=[EBPowerForecastInput new]; i.now=EBFixedDate();
+static EBPowerForecast *EBSyntheticForecast(NSString *name, NSDate *now) {
+    EBPowerForecastInput *i=[EBPowerForecastInput new]; i.now=now;
     i.inverterW=5000; i.chargerW=3500; i.chargerState=EBChargerStateSolar;
     i.chargerStatusAt=i.now; i.chargerMeterAt=i.now;
     NSMutableArray *solar=[NSMutableArray array],*meter=[NSMutableArray array];
@@ -106,7 +110,11 @@ static EBSnapshotView *EBState(NSString *name) {
     }
     if ([name hasPrefix:@"forecast-"]) {
         EBSnapshotView *s=EBState(@"solar-charging");
-        s.forecast=EBSyntheticForecast(name);
+        if ([name isEqual:@"forecast-midnight"]) s.referenceDate=[EBFixedDate() dateByAddingTimeInterval:-4*3600+60];
+        if ([name isEqual:@"forecast-late-day"]) s.referenceDate=[EBFixedDate() dateByAddingTimeInterval:20*3600-60];
+        if ([name isEqual:@"forecast-split-now"]) s.referenceDate=[EBFixedDate() dateByAddingTimeInterval:7*60];
+        s.pvAt=s.evnexAt=s.gridAsOf=s.vehicleSOCAt=s.referenceDate;
+        s.forecast=EBSyntheticForecast(name,s.referenceDate);
         if (![name isEqual:@"forecast-charging"] && ![name isEqual:@"forecast-expired-car"]) {
             s.vehicleHasSOC=NO; s.vehicleHasStoredState=NO;
         }
@@ -765,6 +773,25 @@ int main(int argc, const char *argv[]) {
                      "empty history is not announced as a zero reading");
         }
         {
+            [NSTimeZone setDefaultTimeZone:[NSTimeZone timeZoneWithName:@"America/Los_Angeles"]];
+            NSISO8601DateFormatter *clock=[NSISO8601DateFormatter new];
+            EBChartView *chart=[[EBChartView alloc] initWithFrame:NSMakeRect(0,0,368,150)];
+            chart.referenceDate=[clock dateFromString:@"2026-11-01T00:00:00-07:00"];
+            EBExpect([chart displayDuration]==25*3600,"Today includes the entire 25-hour local day");
+            chart.referenceDate=[clock dateFromString:@"2026-03-08T12:07:00-07:00"];
+            EBExpect([chart displayDuration]==23*3600,"Today ends at local midnight on a 23-hour day");
+            EBPowerForecast *forecast=EBSyntheticForecast(@"forecast-charging",chart.referenceDate);
+            chart.forecast=forecast;
+            chart.samples=@[@{@"t":[chart.referenceDate dateByAddingTimeInterval:10],@"pvW":@99999,@"supplyW":@0,@"chargeW":@0},
+                            @{@"t":[chart.referenceDate dateByAddingTimeInterval:-10],@"pvW":@1500,@"supplyW":@0,@"chargeW":@0}];
+            NSInteger current=[chart barIndexForDate:chart.referenceDate];
+            EBExpect([[chart detailsForBar:current-1] containsString:@"Solar 1.5 kW"] &&
+                     [[chart detailsForBar:current] hasPrefix:@"Forecast"],
+                     "an interval split at Now keeps observations and projections separate");
+            EBExpect(![chart.accessibilityLabel containsString:@"100.0"],"future-dated observations cannot set measured scale");
+            [NSTimeZone setDefaultTimeZone:[NSTimeZone timeZoneForSecondsFromGMT:0]];
+        }
+        {
             EBChartScale scale = EBChartMakeScale(4500, 1600);
             EBExpect(scale.solarW == 5000 && scale.importW == 2000 && scale.stepW == 1000,
                      "day chart rounds its limits to readable kW values");
@@ -795,6 +822,7 @@ int main(int argc, const char *argv[]) {
                             @"charge-eta-complete", @"charge-eta-estimated-complete", @"charge-eta-paused", @"charge-eta-stale", @"charge-eta-signed-out",
                             @"forecast-charging", @"forecast-signed-out", @"forecast-stopped",
                             @"forecast-solar-only", @"forecast-unavailable", @"forecast-expired-car",
+                            @"forecast-midnight", @"forecast-late-day", @"forecast-split-now",
                             @"battery-unknown", @"battery-reported-full", @"battery-last-full", @"battery-last-unplugged"];
         NSString *renderDir = [EBRepoRoot() stringByAppendingPathComponent:@"build/render"];
         NSString *snapDir = [EBRepoRoot() stringByAppendingPathComponent:@"Tests/snapshots"];
@@ -830,7 +858,7 @@ int main(int argc, const char *argv[]) {
                     [name isEqualToString:@"history-48h"] || [name hasPrefix:@"tariff-"]) {
                     BOOL longWindow = [name isEqualToString:@"history-48h"] || [name isEqualToString:@"tariff-history-48h"];
                     pv.windowSeg.selectedSegment = longWindow ? 1 : 0;
-                    pv.chart.windowSeconds = (longWindow ? 48 : 12) * 3600;
+                    pv.chart.windowSeconds = (longWindow ? 48 : 24) * 3600;
                     samp = EBDaylightSamples(snap.referenceDate, pv.chart.windowSeconds);
                 }
                 // NSPopover insets its content view; a refresh must not move it.
@@ -839,7 +867,11 @@ int main(int argc, const char *argv[]) {
                 if ([name isEqual:@"forecast-expired-car"])
                     [pv.chart expireForecastAt:[snap.referenceDate dateByAddingTimeInterval:151]];
                 if ([name hasPrefix:@"forecast-"]) {
-                    NSString *past=[pv.chart detailsForBar:31],*future=[pv.chart detailsForBar:32];
+                    NSInteger current=[pv.chart barIndexForDate:snap.referenceDate];
+                    NSString *past=[pv.chart detailsForBar:current-1],*future=[pv.chart detailsForBar:current];
+                    EBExpect([[pv.chart displayStart] isEqual:[NSCalendar.currentCalendar startOfDayForDate:snap.referenceDate]] &&
+                             [[pv.chart displayEnd] timeIntervalSinceDate:[pv.chart displayStart]]==86400,
+                             "Today covers midnight to midnight, including all remaining daylight");
                     EBExpect(![past hasPrefix:@"Forecast"] && [future hasPrefix:@"Forecast"],
                              "Now must separate observed and projected bars even with unavailable data");
                     if ([name isEqual:@"forecast-signed-out"] || [name isEqual:@"forecast-expired-car"]) {
@@ -856,7 +888,7 @@ int main(int argc, const char *argv[]) {
                     pv.chart.windowSeconds=48*3600;
                     EBExpect(![[pv.chart detailsForBar:47] hasPrefix:@"Forecast"] && [[pv.chart detailsForBar:48] hasPrefix:@"Forecast"],
                              "48h outlook keeps exactly 36h measured and 12h projected");
-                    pv.chart.windowSeconds=12*3600;
+                    pv.chart.windowSeconds=24*3600;
                 }
                 EBExpect(NSEqualPoints(pv.root.frame.origin, NSMakePoint(7, 13)),
                          "refresh keeps the popover's content origin");

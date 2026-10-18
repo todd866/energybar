@@ -1297,7 +1297,7 @@ static NSDictionary *EBForecastCache(void) {
 
 - (void)changeWindow:(NSSegmentedControl *)sender {
     if (!self.views.chart) return;
-    self.views.chart.windowSeconds = sender.selectedSegment == 1 ? 48 * 3600 : 12 * 3600;
+    self.views.chart.windowSeconds = sender.selectedSegment == 1 ? 48 * 3600 : 24 * 3600;
     [self updatePopoverBody];
 }
 
@@ -1773,6 +1773,9 @@ static int EBDump(BOOL jsonMode, NSString *renderPrefix) {
             s.sessionHistory.sessions ?: @[], sessionDay, sessionThrough);
         BOOL sessionDayAvailable = s.sessionHistory.complete && sessionThrough &&
             [sessionThrough compare:sessionDay] != NSOrderedAscending && sessionDayTotal.exact;
+        NSCalendar *chartCalendar=NSCalendar.currentCalendar;
+        NSDate *todayStart=[chartCalendar startOfDayForDate:dumpNow];
+        NSDate *todayEnd=[chartCalendar dateByAddingUnit:NSCalendarUnitDay value:1 toDate:todayStart options:0];
         NSDictionary *out = @{
             @"schemaVersion": @9,
             @"chargingEstimate": chargeEstimate.dictionaryValue,
@@ -1789,6 +1792,14 @@ static int EBDump(BOOL jsonMode, NSString *renderPrefix) {
                 @"intervalCount": @(estimateView.forecast.rows.count),
                 @"next15Minutes": EBForecastAverage(estimateView.forecast.rows,
                     estimateView.forecast.asOf, [estimateView.forecast.asOf dateByAddingTimeInterval:900]) ?: @{},
+                @"today": @{
+                    @"start": EBJSONDateString(todayStart),
+                    @"end": EBJSONDateString(todayEnd),
+                    @"timeZone": chartCalendar.timeZone.name,
+                    @"remainingSeconds": @([todayEnd timeIntervalSinceDate:dumpNow]),
+                    // A field is present only with complete component coverage through midnight.
+                    @"remainingAveragePower": EBForecastAverage(estimateView.forecast.rows, dumpNow, todayEnd) ?: @{},
+                },
                 @"completionBar": completionBar,
                 @"afterCompletionBar": afterCompletionBar,
             },

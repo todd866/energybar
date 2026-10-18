@@ -122,6 +122,7 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
 @implementation EBChartView {
     EBBar *_bars;
     NSInteger _nBars;
+    NSArray<NSDate *> *_barEdges;
     double _upMax, _downMax, _step;
     NSRect _plot;
     CGFloat _zeroY;
@@ -131,7 +132,7 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
 - (instancetype)initWithFrame:(NSRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
-        _windowSeconds = 12 * 3600;
+        _windowSeconds = 24 * 3600;
         self.accessibilityElement = YES;
         self.accessibilityRole = NSAccessibilityButtonRole;
         self.accessibilityHelp = @"Click an interval for its power readings. VoiceOver press opens the latest interval.";
@@ -159,7 +160,24 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
 - (NSDate *)observationDate { return self.referenceDate ?: self.forecast.asOf ?: [NSDate date]; }
 - (NSDate *)displayEnd {
     NSDate *now = [self observationDate];
-    return [self hasForecast] ? [now dateByAddingTimeInterval:self.windowSeconds > 24*3600 ? 12*3600 : 4*3600] : now;
+    if (self.windowSeconds <= 24*3600) {
+        NSCalendar *calendar = NSCalendar.currentCalendar;
+        return [calendar dateByAddingUnit:NSCalendarUnitDay value:1
+                                  toDate:[calendar startOfDayForDate:now] options:0];
+    }
+    return [self hasForecast] ? [now dateByAddingTimeInterval:12*3600] : now;
+}
+- (NSDate *)displayStart {
+    return self.windowSeconds <= 24*3600
+        ? [NSCalendar.currentCalendar startOfDayForDate:[self observationDate]]
+        : [[self displayEnd] dateByAddingTimeInterval:-self.windowSeconds];
+}
+- (NSTimeInterval)displayDuration { return [[self displayEnd] timeIntervalSinceDate:[self displayStart]]; }
+- (NSInteger)barIndexForDate:(NSDate *)date {
+    for (NSInteger i = 0; i < _nBars; i++)
+        if ([date compare:_barEdges[i]] != NSOrderedAscending &&
+            [date compare:_barEdges[i+1]] == NSOrderedAscending) return i;
+    return NSNotFound;
 }
 
 - (void)setSamples:(NSArray<NSDictionary *> *)samples {
@@ -168,7 +186,7 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
 }
 
 - (void)setWindowSeconds:(NSTimeInterval)windowSeconds {
-    _windowSeconds = windowSeconds > 0 ? windowSeconds : 12 * 3600;
+    _windowSeconds = windowSeconds > 0 ? windowSeconds : 24 * 3600;
     [self rebuild];
 }
 
@@ -182,7 +200,8 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
     [self rebuild];
 }
 
-/// 15-minute bars over 12 h, 45-minute bars over 48 h.
+/// Approximately half-hour bars for Today, 45-minute bars over 48 h.
+/// Split the current interval at Now so a measured bar never extends into the future.
 - (NSInteger)barCount { return self.windowSeconds > 24 * 3600 ? 64 : 48; }
 
 - (NSRect)plotRect {
@@ -195,22 +214,30 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
 
 - (void)rebuild {
     free(_bars);
-    _nBars = [self barCount];
+    NSDate *start = [self displayStart], *end = [self displayEnd], *observed = [self observationDate];
+    NSInteger count = [self barCount];
+    NSTimeInterval duration = [end timeIntervalSinceDate:start], barSec = duration / count;
+    NSMutableArray *edges = [NSMutableArray arrayWithCapacity:(NSUInteger)count+2];
+    for (NSInteger i = 0; i <= count; i++) {
+        NSDate *edge = [start dateByAddingTimeInterval:i*barSec];
+        if (i > 0 && [observed timeIntervalSinceDate:edges.lastObject] > 0.01 &&
+            [edge timeIntervalSinceDate:observed] > 0.01) [edges addObject:observed];
+        [edges addObject:edge];
+    }
+    _barEdges = edges; _nBars = (NSInteger)edges.count - 1;
     _bars = calloc((size_t)_nBars, sizeof(EBBar));
     [self removeAllToolTips];
     _upMax = _downMax = 0;
     if (!_bars) { _nBars = 0; return; }
-    NSDate *now = [self displayEnd];
-    NSDate *start = [now dateByAddingTimeInterval:-self.windowSeconds];
-    NSTimeInterval barSec = self.windowSeconds / _nBars;
     NSMutableArray<NSMutableArray *> *rows = [NSMutableArray arrayWithCapacity:(NSUInteger)_nBars];
     for (NSInteger i = 0; i < _nBars; i++) [rows addObject:[NSMutableArray array]];
     for (NSDictionary *row in self.samples) {
         NSDate *t = row[@"t"];
         if (![t isKindOfClass:NSDate.class]) continue;
-        NSTimeInterval off = [t timeIntervalSinceDate:start];
-        if (off < 0 || off >= self.windowSeconds) continue;
-        [rows[(NSUInteger)MIN(_nBars - 1, (NSInteger)(off / barSec))] addObject:row];
+        // Timestamped observations cannot fill any part of the future region.
+        if ([t compare:observed] != NSOrderedAscending) continue;
+        NSInteger index = [self barIndexForDate:t];
+        if (index != NSNotFound) [rows[(NSUInteger)index] addObject:row];
     }
     for (NSInteger i = 0; i < _nBars; i++) {
         EBChartSeriesAverages v = EBStoreChartSeriesAverages(rows[(NSUInteger)i]);
@@ -229,8 +256,7 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
         _downMax = fmax(_downMax, bar->carGrid + bar->homeGrid);
     }
     if ([self hasForecast]) for (NSInteger i = 0; i < _nBars; i++) {
-        NSDate *a = [start dateByAddingTimeInterval:i * barSec];
-        NSDate *b = [a dateByAddingTimeInterval:barSec];
+        NSDate *a = _barEdges[i], *b = _barEdges[i+1];
         if ([a compare:[self observationDate]] == NSOrderedAscending) continue;
         NSDictionary *v = EBForecastAverage(self.forecast.rows, a, b);
         if (!v) continue;
@@ -256,7 +282,7 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
     for (NSInteger i = 0; i < _nBars; i++) anyKnown = anyKnown || _bars[i].known;
     self.accessibilityLabel = anyKnown
         ? [NSString stringWithFormat:@"%.0f-hour power %@. Solar above zero, grid import below zero. Shared scale: %.1f kW solar to minus %.1f kW import. Hatched areas have no data. %@",
-           self.windowSeconds / 3600, [self hasForecast] ? @"history and forecast" : @"history", _upMax / 1000, _downMax / 1000,
+           duration / 3600, [self hasForecast] ? @"history and forecast" : @"history", _upMax / 1000, _downMax / 1000,
            [self hasForecast] ? @"Solid bars are measured; outlined bars are forecasts. Partial forecasts show solar only; home and any known car load are in interval details." : @""]
         : ([self hasForecast] ? @"No power data. Forecast inputs unavailable; the future window remains after Now." : @"No power history yet");
     self.needsDisplay = YES;
@@ -264,15 +290,11 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
 
 - (NSString *)detailsForBar:(NSInteger)i {
     if (i < 0 || i >= _nBars) return nil;
-    NSDate *now = [self displayEnd];
-    NSDate *start = [now dateByAddingTimeInterval:-self.windowSeconds];
-    NSTimeInterval barSec = self.windowSeconds / _nBars;
+    NSDate *barStart = _barEdges[i], *barEnd = _barEdges[i+1];
     NSDateFormatter *df = [NSDateFormatter new];
     df.dateFormat = self.windowSeconds > 24 * 3600 ? @"EEE d MMM HH:mm" : @"HH:mm";
     NSString *span = [NSString stringWithFormat:@"%@–%@",
-                      [df stringFromDate:[start dateByAddingTimeInterval:i * barSec]],
-                      [df stringFromDate:[start dateByAddingTimeInterval:(i + 1) * barSec]]];
-    NSDate *barStart = [start dateByAddingTimeInterval:i * barSec];
+                      [df stringFromDate:barStart], [df stringFromDate:barEnd]];
     BOOL projected = [self hasForecast] && [barStart compare:[self observationDate]] != NSOrderedAscending;
     if (projected) {
         EBBar b = _bars[i];
@@ -286,7 +308,7 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
         [lines addObject:car ? [NSString stringWithFormat:@"Car %.1f kW", b.car / 1000] : @"Car — unavailable"];
         [lines addObject:grid ? [NSString stringWithFormat:@"Export %.1f kW", b.export_ / 1000] : @"Export — unavailable"];
         [lines addObject:grid ? [NSString stringWithFormat:@"Import %.1f kW", (b.carGrid + b.homeGrid) / 1000] : @"Import — unavailable"];
-        NSDictionary *r = EBForecastAverage(self.forecast.rows, barStart, [barStart dateByAddingTimeInterval:barSec]);
+        NSDictionary *r = EBForecastAverage(self.forecast.rows, barStart, barEnd);
         if (solar) [lines addObject:[NSString stringWithFormat:@"Solar scenario range %.1f–%.1f kW", [r[@"pvLowW"] doubleValue]/1000, [r[@"pvHighW"] doubleValue]/1000]];
         if (car && self.forecast.carFinishesAt) [lines addObject:[NSString stringWithFormat:@"Car stops at ~%@ at the current rate",[df stringFromDate:self.forecast.carFinishesAt]]];
         if (_solarSuppressed || _homeSuppressed || _carSuppressed) [lines addObject:@"Expired components are unavailable; other projections retain their own source clocks."];
@@ -318,8 +340,10 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
 - (void)mouseDown:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
     if (!NSPointInRect(p, _plot) || _nBars <= 0) return;
-    NSInteger i = (NSInteger)((p.x - _plot.origin.x) / _plot.size.width * _nBars);
-    [self showBarDetails:MIN(_nBars - 1, i)];
+    NSDate *date = [[self displayStart] dateByAddingTimeInterval:
+        (p.x - _plot.origin.x) / _plot.size.width * [self displayDuration]];
+    NSInteger i = [self barIndexForDate:date];
+    if (i != NSNotFound) [self showBarDetails:i];
 }
 
 - (BOOL)accessibilityPerformPress {
@@ -366,15 +390,17 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
         NSRectFillUsingOperation(NSMakeRect(plot.origin.x, _zeroY - h(kw), plot.size.width, 1),
                                  NSCompositingOperationSourceOver);
 
-    CGFloat slot = plot.size.width / MAX(1, _nBars);
-    CGFloat barW = MAX(1, slot - 1);
+    NSDate *displayStart = [self displayStart];
+    NSTimeInterval duration = [self displayDuration];
     for (NSInteger i = 0; i < _nBars; i++) {
         EBBar b = _bars[i];
-        double barStart = [self displayEnd].timeIntervalSince1970 - self.windowSeconds + i * self.windowSeconds / _nBars;
+        double barStart = _barEdges[i].timeIntervalSince1970;
+        CGFloat slot = [_barEdges[i+1] timeIntervalSinceDate:_barEdges[i]] / duration * plot.size.width;
+        CGFloat barW = fmax(0, slot - fmin(1, slot / 4));
         BOOL forecast = [self hasForecast] && barStart >= [self observationDate].timeIntervalSince1970 - 0.01;
         BOOL partial = forecast && (!b.balanced || _solarSuppressed || _homeSuppressed || _carSuppressed);
         if (partial) b.known = NO;
-        CGFloat x = plot.origin.x + i * slot;
+        CGFloat x = plot.origin.x + [_barEdges[i] timeIntervalSinceDate:displayStart] / duration * plot.size.width;
         if (!b.known) {
             if (!any && ![self hasForecast]) continue;
             NSRect band = NSMakeRect(x, plot.origin.y, barW, plot.size.height);
@@ -473,10 +499,10 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
         [msg drawAtPoint:NSMakePoint(NSMidX(plot) - sz.width / 2, NSMidY(plot)) withAttributes:lab];
     }
 
-    // Hour labels every 3 h (12 h window) or 12 h (48 h window).
+    // Six-hour labels keep Today legible; the 48-hour view labels every twelve hours.
     NSDate *now = [self displayEnd];
-    NSDate *start = [now dateByAddingTimeInterval:-self.windowSeconds];
-    NSInteger stepHours = self.windowSeconds > 24 * 3600 ? 12 : 3;
+    NSDate *start = [self displayStart];
+    NSInteger stepHours = self.windowSeconds > 24 * 3600 ? 12 : 6;
     NSCalendar *cal = NSCalendar.currentCalendar;
     NSDateComponents *comps = [cal components:NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay | NSCalendarUnitHour
                                      fromDate:start];
@@ -489,7 +515,7 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
     while (tick && [tick compare:now] == NSOrderedAscending) {
         NSTimeInterval off = [tick timeIntervalSinceDate:start];
         if (off >= 0 && (any || [self hasForecast])) {
-            CGFloat x = plot.origin.x + (CGFloat)(off / self.windowSeconds) * plot.size.width;
+            CGFloat x = plot.origin.x + (CGFloat)(off / duration) * plot.size.width;
             // 48 h: midnight names the day, noon says 12:00, so neighbours never collide.
             BOOL midnight = [cal component:NSCalendarUnitHour fromDate:tick] == 0;
             NSString *t = (stepHours == 12 && midnight) ? [dayF stringFromDate:tick] : [df stringFromDate:tick];
@@ -502,8 +528,12 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
         }
         tick = [cal dateByAddingUnit:NSCalendarUnitHour value:stepHours toDate:tick options:0];
     }
+    if (self.windowSeconds <= 24*3600 && (any || [self hasForecast])) {
+        NSString *endLabel=@"24:00";
+        [endLabel drawAtPoint:NSMakePoint(NSMaxX(plot)-[endLabel sizeWithAttributes:lab].width, self.bounds.origin.y) withAttributes:lab];
+    }
     if ([self hasForecast]) {
-        CGFloat nx = plot.origin.x + [[self observationDate] timeIntervalSinceDate:start] / self.windowSeconds * plot.size.width;
+        CGFloat nx = plot.origin.x + [[self observationDate] timeIntervalSinceDate:start] / duration * plot.size.width;
         NSBezierPath *boundary = [NSBezierPath bezierPath];
         [boundary moveToPoint:NSMakePoint(nx, plot.origin.y)];
         [boundary lineToPoint:NSMakePoint(nx, NSMaxY(plot))];
@@ -512,8 +542,13 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
         NSDictionary *small = @{NSFontAttributeName:[NSFont systemFontOfSize:9 weight:NSFontWeightMedium],
                                 NSForegroundColorAttributeName:EBInkSecondary()};
         NSString *label = @"Now";
-        [label drawAtPoint:NSMakePoint(nx - [label sizeWithAttributes:small].width - 3, NSMaxY(plot) + 1) withAttributes:small];
-        [@"Forecast" drawAtPoint:NSMakePoint(nx + 4, NSMaxY(plot) + 1) withAttributes:small];
+        CGFloat nowWidth = [label sizeWithAttributes:small].width;
+        CGFloat labelX = fmax(plot.origin.x, fmin(NSMaxX(plot)-nowWidth, nx-nowWidth-3));
+        [label drawAtPoint:NSMakePoint(labelX, NSMaxY(plot) + 1) withAttributes:small];
+        CGFloat forecastWidth = [@"Forecast" sizeWithAttributes:small].width;
+        CGFloat forecastX = fmax(nx+4, labelX+nowWidth+4);
+        if (forecastX+forecastWidth <= NSMaxX(plot))
+            [@"Forecast" drawAtPoint:NSMakePoint(forecastX, NSMaxY(plot) + 1) withAttributes:small];
     }
 
 }

@@ -101,6 +101,15 @@ int main(void) { @autoreleasepool {
            "overnight measured zero must not erase upcoming daylight radiation");
     i=Input();f=EBBuildPowerForecast(i);
     Expect(!EBForecastAverage(f.rows,At(i.now,24*3600),At(i.now,25*3600)),"past available horizon is unknown");
+    [NSTimeZone setDefaultTimeZone:[NSTimeZone timeZoneWithName:@"America/Los_Angeles"]];
+    i=[EBPowerForecastInput new];
+    i.now=[[NSISO8601DateFormatter new] dateFromString:@"2026-11-01T00:00:00-07:00"];
+    i.chargerState=EBChargerStateWaiting; i.chargerStatusAt=i.now;
+    f=EBBuildPowerForecast(i);
+    Expect(EBForecastAverage(f.rows,At(i.now,24*3600),At(i.now,25*3600))[@"chargeW"] &&
+           !EBForecastAverage(f.rows,At(i.now,25*3600),At(i.now,26*3600)),
+           "Today projection covers the complete 25-hour local day and stops at its boundary");
+    [NSTimeZone setDefaultTimeZone:[NSTimeZone timeZoneForSecondsFromGMT:0]];
     Expect([before[@"pvLowW"] doubleValue]<4000 && [before[@"pvHighW"] doubleValue]<=5000,"uncertainty envelope and inverter cap");
     Expect(!EBForecastRequestURL(nil) && !EBForecastRequestURL(@{}),"no ongoing consent means no forecast request");
     Expect(!EBForecastRequestURL(@{@"enabled":@YES,@"provider":@"Open-Meteo",@"latitude":@1,@"longitude":@2}),"one-off permission is not recurring consent");

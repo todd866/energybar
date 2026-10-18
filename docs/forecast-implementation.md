@@ -7,8 +7,10 @@ retains gross import and export in the final partial bar, and projects zero car
 load afterward. This is a conditional scenario, not an OEM completion promise.
 
 The 400-point popover keeps three instrument rows, its existing chart and footer.
-The 12-hour view has eight hours of history and four projected hours; 48 hours
-uses 36 past and 12 future. Solid bars are observations; outlined bars are
+The default Today view runs from local midnight to midnight, including the
+remaining daylight and 23/25-hour daylight-saving days. The 48-hour view uses
+36 past and 12 future. The interval containing Now is split exactly at the
+observation time, so solid measured bars never extend into the future. Solid bars are observations; outlined bars are
 projections. Selecting an interval gives the assumptions and source ages.
 Solar, home and car have independent availability and expiry clocks. A signed-out
 vehicle or missing SoC suppresses only its charging scenario and the grid balance
@@ -21,8 +23,8 @@ draws any known solar generation as orange outlines over the hatched unknown
 allocations. Interval details show independently known home/car values; missing
 car, import and export are marked unavailable. If all inputs are missing, the
 future region remains hatched after Now instead of reverting to a history-only
-chart. The default 12-hour window is still eight hours past and four ahead; use
-48 hours for the twelve-hour outlook. No control is scheduled.
+chart. Today always includes the rest of the local day; 48 hours adds the longer
+history and a twelve-hour outlook. No control is scheduled.
 
 History reads, tariff integration and forecast preparation run outside the
 opening action. A prepared AppKit view opens without animation. Coalescing and

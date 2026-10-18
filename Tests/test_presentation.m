@@ -8,6 +8,7 @@
 
 @interface EBChartView (ForecastDetailsTesting)
 - (NSString *)detailsForBar:(NSInteger)i;
+- (NSInteger)barIndexForDate:(NSDate *)date;
 @end
 
 static int failures;
@@ -114,12 +115,12 @@ static int Regression(void) {
     vm.gridStale=NO; vm.vehicleSOC=50; vm.vehicleSOCIsEstimate=NO;
     EBApplySnapshot(app.views,vm,@[]);
     [app expirePreparedPresentationAt:[vm.referenceDate dateByAddingTimeInterval:151]];
-    NSString *projection=[app.views.chart detailsForBar:32];
+    NSString *projection=[app.views.chart detailsForBar:[app.views.chart barIndexForDate:vm.referenceDate]];
     Expect([projection containsString:@"Solar 4.0 kW"] && [projection containsString:@"Home 1.0 kW"] &&
            [projection containsString:@"Car — unavailable"] && [projection containsString:@"Import — unavailable"],
            "opening guard independently expires car and dependent grid without hiding solar/home");
     [app expirePreparedPresentationAt:[vm.referenceDate dateByAddingTimeInterval:601]];
-    projection=[app.views.chart detailsForBar:32];
+    projection=[app.views.chart detailsForBar:[app.views.chart barIndexForDate:vm.referenceDate]];
     Expect([projection containsString:@"Solar — unavailable"] && [projection containsString:@"Home 1.0 kW"],
            "solar expiry retains independently current household baseline");
     printf("presentation regression: %s; opening with blocked history %.3f ms\n", failures?"FAILED":"ok",openMS);

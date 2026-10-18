@@ -156,14 +156,14 @@ EBPopoverViews *EBBuildPopover(id target) {
     v.footerDivider = EBDivider();
 
     v.legend = [[EBChartLegend alloc] initWithFrame:NSZeroRect];
-    v.windowSeg = [NSSegmentedControl segmentedControlWithLabels:@[@"12h", @"48h"]
+    v.windowSeg = [NSSegmentedControl segmentedControlWithLabels:@[@"Today", @"48h"]
                                                     trackingMode:NSSegmentSwitchTrackingSelectOne
                                                           target:target
                                                           action:@selector(changeWindow:)];
     v.windowSeg.controlSize = NSControlSizeSmall;
     v.windowSeg.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
     v.windowSeg.selectedSegment = 0;
-    v.windowSeg.accessibilityLabel = @"History window";
+    v.windowSeg.accessibilityLabel = @"Power chart window";
     [v.windowSeg sizeToFit];
     v.chart = [[EBChartView alloc] initWithFrame:NSMakeRect(0, 0, EBPanelW - 2 * EBPad, kChartH)];
 
@@ -354,7 +354,7 @@ void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *s, NSArray<NSDictionary 
     NSColor *blue = EBDyn(^{ return EBColorCarOnSolar(); });
     NSColor *red = EBDyn(^{ return EBColorCarOnGrid(); });
     NSColor *amber = EBDyn(^{ return NSColor.systemYellowColor; });
-    NSTimeInterval win = v.chart.windowSeconds > 0 ? v.chart.windowSeconds : 12 * 3600;
+    NSTimeInterval win = v.chart.windowSeconds > 0 ? v.chart.windowSeconds : 24 * 3600;
     double scale = EBGaugeScale(samples ?: @[], [referenceDate dateByAddingTimeInterval:-12 * 3600], s);
     BOOL meter = s.gridOK || s.gridStale;
 
@@ -782,7 +782,8 @@ void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *s, NSArray<NSDictionary 
     v.detailsText = [details componentsJoinedByString:@"\n\n"];
     v.chart.forecast = s.forecast;
     v.chart.referenceDate = referenceDate;
-    NSDate *since = [referenceDate dateByAddingTimeInterval:-win];
+    NSDate *since = win <= 24*3600 ? [NSCalendar.currentCalendar startOfDayForDate:referenceDate]
+        : [referenceDate dateByAddingTimeInterval:-win];
     NSMutableArray *windowRows = [NSMutableArray array];
     for (NSDictionary *row in samples ?: @[]) {
         NSDate *t = row[@"t"];

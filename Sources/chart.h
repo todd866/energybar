@@ -39,7 +39,7 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW);
 - (void)suppressForecast;
 - (void)suppressCarForecast;
 - (void)expireForecastAt:(NSDate *)now;
-@property(nonatomic) NSTimeInterval windowSeconds; // default 12h
+@property(nonatomic) NSTimeInterval windowSeconds; // default 24h selects the local calendar day; 48h selects the longer window
 /// Observation/forecast boundary. Nil uses the current date.
 @property(nonatomic, copy, nullable) NSDate *referenceDate;
 @end

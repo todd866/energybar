@@ -166,11 +166,16 @@ EBPowerForecast *EBBuildPowerForecast(EBPowerForecastInput *i) {
     out.gridAvailable=out.solarAvailable && out.homeAvailable && out.carAvailable;
     NSMutableArray *rows=[NSMutableArray array];
     // Keep separate component coverage; an unknown car never becomes a zero load.
-    NSMutableSet<NSNumber *> *bounds=[NSMutableSet setWithObjects:@(now),@(now+24*3600),nil];
+    NSCalendar *calendar=NSCalendar.currentCalendar;
+    NSDate *dayEnd=[calendar dateByAddingUnit:NSCalendarUnitDay value:1
+                                     toDate:[calendar startOfDayForDate:i.now] options:0];
+    // Include the whole local day even on a 25-hour daylight-saving transition.
+    double horizon=fmax(now+24*3600,dayEnd.timeIntervalSince1970);
+    NSMutableSet<NSNumber *> *bounds=[NSMutableSet setWithObjects:@(now),@(horizon),nil];
     for (NSDictionary *h in hours) for (NSString *key in @[@"start",@"end"]) {
-        double t=[h[key] doubleValue]; if (t>now&&t<now+24*3600) [bounds addObject:@(t)];
+        double t=[h[key] doubleValue]; if (t>now&&t<horizon) [bounds addObject:@(t)];
     }
-    if (out.carFinishesAt && out.carFinishesAt.timeIntervalSince1970<now+24*3600) [bounds addObject:@(out.carFinishesAt.timeIntervalSince1970)];
+    if (out.carFinishesAt && out.carFinishesAt.timeIntervalSince1970<horizon) [bounds addObject:@(out.carFinishesAt.timeIntervalSince1970)];
     NSArray *edges=[bounds.allObjects sortedArrayUsingSelector:@selector(compare:)];
     for (NSUInteger k=0;k+1<edges.count;k++) {
         double a=[edges[k] doubleValue],b=[edges[k+1] doubleValue]; NSDictionary *weatherHour=nil;

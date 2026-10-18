@@ -181,8 +181,8 @@ with its source and timestamp in Details. It is display history only and cannot
 supply an ETA or establish a new charging anchor. With no recorded level the gauge
 is hidden; measured charging power remains in the Now column.
 
-The existing chart can extend into outlined forecast bars (12h: 8h past + 4h
-future; 48h: 36h past + 12h future). A measured solar baseline and optionally
+The default **Today** chart covers local midnight to midnight, including all
+remaining daylight. The **48h** view keeps 36h past + 12h future. A measured solar baseline and optionally
 approved hourly Open-Meteo radiation support a conditional PV estimate; household
 load excludes the car. The car projection stops at the same unrounded completion
 instant as the ETA, including a partial final bar. Paused/unplugged states project
