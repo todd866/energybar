@@ -6,6 +6,11 @@
 #pragma clang diagnostic pop
 #undef main
 
+@interface EBChartView (ForecastDetailsTesting)
+- (NSString *)detailsForBar:(NSInteger)i;
+- (NSInteger)barIndexForDate:(NSDate *)date;
+@end
+
 static int failures;
 #define Expect(c, msg) do { if (!(c)) { fprintf(stderr,"FAIL: %s\n", msg); failures++; } } while (0)
 @interface EBTestPopover : NSPopover
@@ -46,6 +51,7 @@ static EBSnapshot *Snapshot(double watts) {
 static int Regression(void) {
     EBTestApp *app=[EBTestApp new]; app.config=[EBConfig new];
     app.config.samplesPath=@"/nonexistent-energybar-test/history.jsonl";
+    app.config.statisticsPath=@""; // Presentation tests must never touch the owner's history.
     app.config.tariffPath=@"/nonexistent-energybar-test/tariff.json";
     app.config.orgId=@"test";
     [app preparePopover];
@@ -89,7 +95,62 @@ static int Regression(void) {
     vm.vehicleSOCIsEstimate=NO; vm.vehicleSOC=100; vm.vehicleSOCAt=vm.referenceDate;
     vm.gridStale=YES; EBApplySnapshot(app.views,vm,@[]);
     [app expirePreparedPresentationAt:vm.referenceDate];
-    Expect([app.views.carRow.targetLabel isEqual:@"✓"],"confirmed target marker must survive meter staleness");
+    Expect(app.views.carRow.targetLabel.length==0 && app.views.carRow.targetFraction<0,
+           "confirmed completion stays label-free after opening freshness guard");
+    vm.vehicleSOCIsEstimate=YES;
+    EBApplySnapshot(app.views,vm,@[]);
+    [app expirePreparedPresentationAt:vm.referenceDate];
+    Expect(app.views.carRow.targetLabel.length==0 && app.views.carRow.targetFraction<0,
+           "inferred completion stays label-free after opening freshness guard");
+    // Exercise the actual opening guard: an expired car does not expire fresh solar/home.
+    EBPowerForecast *forecast=[EBPowerForecast new]; forecast.asOf=vm.referenceDate;
+    forecast.available=forecast.solarAvailable=forecast.homeAvailable=forecast.carAvailable=forecast.gridAvailable=YES;
+    forecast.solarValidUntil=[vm.referenceDate dateByAddingTimeInterval:600];
+    forecast.homeValidUntil=[vm.referenceDate dateByAddingTimeInterval:3600];
+    forecast.carValidUntil=[vm.referenceDate dateByAddingTimeInterval:150];
+    NSMutableDictionary *row=[EBForecastBalance(4000,1000,3500) mutableCopy];
+    row[@"pvLowW"]=@2400; row[@"pvHighW"]=@5000;
+    row[@"start"]=vm.referenceDate; row[@"end"]=[vm.referenceDate dateByAddingTimeInterval:86400];
+    forecast.rows=@[row]; vm.forecast=forecast;
+    vm.gridStale=NO; vm.vehicleSOC=50; vm.vehicleSOCIsEstimate=NO;
+    EBApplySnapshot(app.views,vm,@[]);
+    [app expirePreparedPresentationAt:[vm.referenceDate dateByAddingTimeInterval:151]];
+    NSString *projection=[app.views.chart detailsForBar:[app.views.chart barIndexForDate:vm.referenceDate]];
+    Expect([projection containsString:@"Solar 4.0 kW"] && [projection containsString:@"Home 1.0 kW"] &&
+           [projection containsString:@"Car — unavailable"] && [projection containsString:@"Import — unavailable"],
+           "opening guard independently expires car and dependent grid without hiding solar/home");
+    [app expirePreparedPresentationAt:[vm.referenceDate dateByAddingTimeInterval:601]];
+    projection=[app.views.chart detailsForBar:[app.views.chart barIndexForDate:vm.referenceDate]];
+    Expect([projection containsString:@"Solar — unavailable"] && [projection containsString:@"Home 1.0 kW"],
+           "solar expiry retains independently current household baseline");
+    NSString *directory=[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+    app.config.statisticsPath=[directory stringByAppendingPathComponent:@"statistics.json"];
+    app.statisticsNextUpdateAt=nil;
+    NSDate *observation=[NSDate date];
+    app.learningPV=[@[@{@"t":[observation dateByAddingTimeInterval:-60],@"pvW":@1000},
+                      @{@"t":observation,@"pvW":@1100}] mutableCopy];
+    app.snap=Snapshot(1100);app.snap.chargingLogic=@"NoVehicle";
+    [app updatePopoverBody];
+    Expect(SpinUntil(^BOOL{ return !app.presentationInFlight; },3),"real learning preparation finishes off the opening path");
+    NSString *learningPath=[directory stringByAppendingPathComponent:@"learning.json"];
+    NSString *source=EBStableSourceID(@"statistics",@"0:/");NSError *error=nil;
+    NSDictionary *ledger=EBLearningLoad(learningPath,source,&error);
+    Expect(ledger && !error && [ledger[@"pv"] count]>=1,"real controller persists measured PV in private ledger");
+    Expect([ledger[@"vintages"] count]==1 && [ledger[@"vintages"][0][@"prediction"][@"chargeW"] doubleValue]==0,
+           "real controller freezes a future stopped-car scenario without inventing battery needs");
+    Expect([ledger[@"vintages"][0][@"start"] doubleValue]>observation.timeIntervalSince1970,
+           "controller vintage predates its target interval");
+    NSData *unchanged=[NSData dataWithContentsOfFile:learningPath];[app updatePopoverBody];
+    Expect(SpinUntil(^BOOL{ return !app.presentationInFlight; },3),"repeated prepared update completes");
+    Expect([[NSData dataWithContentsOfFile:learningPath] isEqual:unchanged],"learning write cadence is bounded independently of UI updates");
+    [@"corrupt" writeToFile:learningPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    app.statisticsNextUpdateAt=nil;[app updatePopoverBody];
+    Expect(SpinUntil(^BOOL{ return !app.presentationInFlight; },3),"corrupt learning does not block preparation");
+    Expect(app.preparedViewModel.forecast.learningError.length>0 && !app.learningModel,
+           "controller exposes learning storage failure and stops using that model");
+    Expect([[NSString stringWithContentsOfFile:learningPath encoding:NSUTF8StringEncoding error:nil] isEqual:@"corrupt"],
+           "controller preserves corrupt learning history for recovery");
+    [NSFileManager.defaultManager removeItemAtPath:directory error:nil];
     printf("presentation regression: %s; opening with blocked history %.3f ms\n", failures?"FAILED":"ok",openMS);
     return failures?1:0;
 }

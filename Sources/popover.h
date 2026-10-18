@@ -53,6 +53,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property BOOL vehicleHasSOC;
 @property double vehicleSOC;
 @property BOOL vehicleSOCIsEstimate;
+/// Historical display only; never used as the current level by ETA or controls.
+@property(copy, nullable) NSDictionary *vehicleLastKnownSOC;
+@property(copy, nullable) NSString *vehicleSOCSource;
 /// Usable pack (Wh) and charge efficiency, for the Car row's one-hour trend arrow; 0 = unknown.
 @property double vehicleCapacityWh;
 @property double vehicleChargeEfficiency;

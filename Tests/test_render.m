@@ -7,6 +7,10 @@
 
 @interface EBChartView (DetailsTesting)
 - (NSString *)detailsForBar:(NSInteger)i;
+- (NSDate *)displayStart;
+- (NSDate *)displayEnd;
+- (NSTimeInterval)displayDuration;
+- (NSInteger)barIndexForDate:(NSDate *)date;
 @end
 
 static int gFails = 0;
@@ -61,7 +65,65 @@ static NSArray *EBDaylightSamples(NSDate *now, NSTimeInterval window) {
     return rows;
 }
 
+static EBPowerForecast *EBSyntheticForecast(NSString *name, NSDate *now) {
+    EBPowerForecastInput *i=[EBPowerForecastInput new]; i.now=now;
+    i.inverterW=5000; i.chargerW=3500; i.chargerState=EBChargerStateSolar;
+    i.chargerStatusAt=i.now; i.chargerMeterAt=i.now;
+    NSMutableArray *solar=[NSMutableArray array],*meter=[NSMutableArray array];
+    for (int n=-48;n<=0;n++) {
+        NSDate *t=[i.now dateByAddingTimeInterval:n*300];
+        [solar addObject:@{@"t":t,@"pvW":@4000}];
+        [meter addObject:@{@"t":t,@"supplyW":@500,@"chargeW":@3500}];
+    }
+    NSMutableArray *times=[NSMutableArray array],*radiation=[NSMutableArray array];
+    for (int n=-4;n<=25;n++) {
+        [times addObject:@([i.now dateByAddingTimeInterval:n*3600].timeIntervalSince1970)];
+        [radiation addObject:@(n>0?fmax(0,500-n*65):500)];
+    }
+    i.solarSamples=solar; i.meterSamples=meter;
+    i.weather=@{@"fetchedAt":i.now,@"response":@{@"hourly":@{@"time":times,@"shortwave_radiation":radiation},
+        @"hourly_units":@{@"time":@"unixtime",@"shortwave_radiation":@"W/m²"}}};
+    i.chargeEstimate=[EBChargeEstimate new]; i.chargeEstimate.available=YES; i.chargeEstimate.seconds=7200;
+    if ([name isEqual:@"forecast-signed-out"] || [name isEqual:@"forecast-stopped"] || [name isEqual:@"forecast-solar-only"]) {
+        i.chargeEstimate.available=NO; i.chargeEstimate.state=@"battery-unavailable";
+        i.chargeEstimate.detail=@"vehicle cloud: signed out";
+    }
+    if ([name isEqual:@"forecast-stopped"]) i.chargerState=EBChargerStateWaiting;
+    if ([name isEqual:@"forecast-solar-only"]) i.meterSamples=@[];
+    if ([name isEqual:@"forecast-unavailable"]) { i.weather=nil; i.solarSamples=@[]; i.meterSamples=@[]; i.chargerState=EBChargerStateUnknown; }
+    return EBBuildPowerForecast(i);
+}
+
 static EBSnapshotView *EBState(NSString *name) {
+    if ([name hasPrefix:@"battery-"]) {
+        EBSnapshotView *s=EBState(@"solar-charging"); s.chargeW=0;
+        s.vehicleHasSOC=[name isEqual:@"battery-reported-full"];
+        s.vehicleSOC=100; s.vehicleSOCIsEstimate=NO; s.vehicleSOCSource=@"manual";
+        s.vehicleHasStoredState=![name isEqual:@"battery-unknown"];
+        if ([name hasPrefix:@"battery-last-"]) {
+            NSISO8601DateFormatter *clock=[NSISO8601DateFormatter new];
+            s.vehicleLastKnownSOC=@{@"percent":@100,@"at":[clock stringFromDate:[s.referenceDate dateByAddingTimeInterval:-3600]],
+                @"source":@"inferred-manual",@"estimated":@YES};
+        }
+        if ([name isEqual:@"battery-last-unplugged"]) { s.ocppStatus=@"AVAILABLE"; s.chargingLogic=@"NoVehicle"; }
+        return s;
+    }
+    if ([name hasPrefix:@"forecast-"]) {
+        EBSnapshotView *s=EBState(@"solar-charging");
+        if ([name isEqual:@"forecast-midnight"]) s.referenceDate=[EBFixedDate() dateByAddingTimeInterval:-4*3600+60];
+        if ([name isEqual:@"forecast-late-day"]) s.referenceDate=[EBFixedDate() dateByAddingTimeInterval:20*3600-60];
+        if ([name isEqual:@"forecast-split-now"]) s.referenceDate=[EBFixedDate() dateByAddingTimeInterval:7*60];
+        if ([name isEqual:@"forecast-dst-fall"])
+            s.referenceDate=[[NSISO8601DateFormatter new] dateFromString:@"2026-11-01T12:07:00-08:00"];
+        if ([name isEqual:@"forecast-dst-spring"])
+            s.referenceDate=[[NSISO8601DateFormatter new] dateFromString:@"2026-03-08T12:07:00-07:00"];
+        s.pvAt=s.evnexAt=s.gridAsOf=s.vehicleSOCAt=s.referenceDate;
+        s.forecast=EBSyntheticForecast(name,s.referenceDate);
+        if (![name isEqual:@"forecast-charging"] && ![name isEqual:@"forecast-expired-car"]) {
+            s.vehicleHasSOC=NO; s.vehicleHasStoredState=NO;
+        }
+        return s;
+    }
     EBSnapshotView *s = [EBSnapshotView new];
     s.referenceDate = EBFixedDate();
     s.vehicleLine = @"Not linked — AU API unavailable";
@@ -266,6 +328,11 @@ static EBSnapshotView *EBState(NSString *name) {
         if ([name hasSuffix:@"long"]) { s.vehicleSOC = 0; s.chargeW = 100; }
         if ([name hasSuffix:@"near"]) s.vehicleSOC = 99.9;
         if ([name hasSuffix:@"complete"]) s.vehicleSOC = 100;
+        if ([name isEqual:@"charge-eta-estimated-complete"]) {
+            s.vehicleSOCIsEstimate = YES;
+            s.chargeW = 0;
+            s.chargingCurrentControl = @"WaitingSolar";
+        }
         if ([name hasSuffix:@"paused"]) s.chargingCurrentControl = @"WaitingSolar";
         if ([name hasSuffix:@"stale"]) s.gridAsOf = [s.referenceDate dateByAddingTimeInterval:-421];
         if ([name hasSuffix:@"signed-out"]) {
@@ -710,6 +777,25 @@ int main(int argc, const char *argv[]) {
                      "empty history is not announced as a zero reading");
         }
         {
+            [NSTimeZone setDefaultTimeZone:[NSTimeZone timeZoneWithName:@"America/Los_Angeles"]];
+            NSISO8601DateFormatter *clock=[NSISO8601DateFormatter new];
+            EBChartView *chart=[[EBChartView alloc] initWithFrame:NSMakeRect(0,0,368,150)];
+            chart.referenceDate=[clock dateFromString:@"2026-11-01T00:00:00-07:00"];
+            EBExpect([chart displayDuration]==25*3600,"Today includes the entire 25-hour local day");
+            chart.referenceDate=[clock dateFromString:@"2026-03-08T12:07:00-07:00"];
+            EBExpect([chart displayDuration]==23*3600,"Today ends at local midnight on a 23-hour day");
+            EBPowerForecast *forecast=EBSyntheticForecast(@"forecast-charging",chart.referenceDate);
+            chart.forecast=forecast;
+            chart.samples=@[@{@"t":[chart.referenceDate dateByAddingTimeInterval:10],@"pvW":@99999,@"supplyW":@0,@"chargeW":@0},
+                            @{@"t":[chart.referenceDate dateByAddingTimeInterval:-10],@"pvW":@1500,@"supplyW":@0,@"chargeW":@0}];
+            NSInteger current=[chart barIndexForDate:chart.referenceDate];
+            EBExpect([[chart detailsForBar:current-1] containsString:@"Solar 1.5 kW"] &&
+                     [[chart detailsForBar:current] hasPrefix:@"Forecast"],
+                     "an interval split at Now keeps observations and projections separate");
+            EBExpect(![chart.accessibilityLabel containsString:@"100.0"],"future-dated observations cannot set measured scale");
+            [NSTimeZone setDefaultTimeZone:[NSTimeZone timeZoneForSecondsFromGMT:0]];
+        }
+        {
             EBChartScale scale = EBChartMakeScale(4500, 1600);
             EBExpect(scale.solarW == 5000 && scale.importW == 2000 && scale.stepW == 1000,
                      "day chart rounds its limits to readable kW values");
@@ -737,7 +823,12 @@ int main(int argc, const char *argv[]) {
                             @"tariff-cost-export", @"tariff-rounding", @"tariff-balanced", @"tariff-large",
                             @"tariff-partial", @"tariff-stale", @"tariff-zero", @"tariff-invalid", @"tariff-unpriced",
                             @"tariff-history-48h", @"charge-eta-full", @"charge-eta-target", @"charge-eta-near",
-                            @"charge-eta-complete", @"charge-eta-paused", @"charge-eta-stale", @"charge-eta-signed-out"];
+                            @"charge-eta-complete", @"charge-eta-estimated-complete", @"charge-eta-paused", @"charge-eta-stale", @"charge-eta-signed-out",
+                            @"forecast-charging", @"forecast-signed-out", @"forecast-stopped",
+                            @"forecast-solar-only", @"forecast-unavailable", @"forecast-expired-car",
+                            @"forecast-midnight", @"forecast-late-day", @"forecast-split-now",
+                            @"forecast-dst-fall", @"forecast-dst-spring",
+                            @"battery-unknown", @"battery-reported-full", @"battery-last-full", @"battery-last-unplugged"];
         NSString *renderDir = [EBRepoRoot() stringByAppendingPathComponent:@"build/render"];
         NSString *snapDir = [EBRepoRoot() stringByAppendingPathComponent:@"Tests/snapshots"];
         [[NSFileManager defaultManager] createDirectoryAtPath:renderDir withIntermediateDirectories:YES attributes:nil error:nil];
@@ -765,6 +856,8 @@ int main(int argc, const char *argv[]) {
 
         for (NSString *name in states) {
             for (int dark = 0; dark < 2; dark++) {
+                [NSTimeZone setDefaultTimeZone:[name hasPrefix:@"forecast-dst-"]
+                    ? [NSTimeZone timeZoneWithName:@"America/Los_Angeles"] : [NSTimeZone timeZoneForSecondsFromGMT:0]];
                 EBPopoverViews *pv = EBBuildPopover(nil);
                 EBSnapshotView *snap = EBState(name);
                 NSArray *samp = [name isEqualToString:@"cold-start"] ? @[] : samples;
@@ -772,12 +865,39 @@ int main(int argc, const char *argv[]) {
                     [name isEqualToString:@"history-48h"] || [name hasPrefix:@"tariff-"]) {
                     BOOL longWindow = [name isEqualToString:@"history-48h"] || [name isEqualToString:@"tariff-history-48h"];
                     pv.windowSeg.selectedSegment = longWindow ? 1 : 0;
-                    pv.chart.windowSeconds = (longWindow ? 48 : 12) * 3600;
+                    pv.chart.windowSeconds = (longWindow ? 48 : 24) * 3600;
                     samp = EBDaylightSamples(snap.referenceDate, pv.chart.windowSeconds);
                 }
                 // NSPopover insets its content view; a refresh must not move it.
                 [pv.root setFrameOrigin:NSMakePoint(7, 13)];
                 EBApplySnapshot(pv, snap, samp);
+                if ([name isEqual:@"forecast-expired-car"])
+                    [pv.chart expireForecastAt:[snap.referenceDate dateByAddingTimeInterval:151]];
+                if ([name hasPrefix:@"forecast-"]) {
+                    NSInteger current=[pv.chart barIndexForDate:snap.referenceDate];
+                    NSString *past=[pv.chart detailsForBar:current-1],*future=[pv.chart detailsForBar:current];
+                    EBExpect([[pv.chart displayStart] isEqual:[NSCalendar.currentCalendar startOfDayForDate:snap.referenceDate]] &&
+                             [[pv.chart displayEnd] timeIntervalSinceDate:[pv.chart displayStart]]==
+                                 ([name isEqual:@"forecast-dst-fall"] ? 25*3600 : [name isEqual:@"forecast-dst-spring"] ? 23*3600 : 86400),
+                             "Today covers midnight to midnight, including all remaining daylight");
+                    EBExpect(![past hasPrefix:@"Forecast"] && [future hasPrefix:@"Forecast"],
+                             "Now must separate observed and projected bars even with unavailable data");
+                    if ([name isEqual:@"forecast-signed-out"] || [name isEqual:@"forecast-expired-car"]) {
+                        EBExpect([future containsString:@"Solar 4.0 kW"] && [future containsString:@"Home 1.0 kW"] &&
+                                 [future containsString:@"Car — unavailable"] && [future containsString:@"Export — unavailable"],
+                                 "missing/expired car preserves solar and home without invented export");
+                    }
+                    if ([name isEqual:@"forecast-solar-only"])
+                        EBExpect([future containsString:@"Solar 4.0 kW"] && [future containsString:@"Home — unavailable"],
+                                 "missing household history still shows independently calibrated solar");
+                    if ([name isEqual:@"forecast-unavailable"])
+                        EBExpect([future containsString:@"Solar — unavailable"] && [future containsString:@"Car — unavailable"],
+                                 "all-unavailable projection retains a truthful future region");
+                    pv.chart.windowSeconds=48*3600;
+                    EBExpect(![[pv.chart detailsForBar:47] hasPrefix:@"Forecast"] && [[pv.chart detailsForBar:48] hasPrefix:@"Forecast"],
+                             "48h outlook keeps exactly 36h measured and 12h projected");
+                    pv.chart.windowSeconds=24*3600;
+                }
                 EBExpect(NSEqualPoints(pv.root.frame.origin, NSMakePoint(7, 13)),
                          "refresh keeps the popover's content origin");
                 [pv.root setFrameOrigin:NSZeroPoint];
@@ -986,6 +1106,23 @@ int main(int argc, const char *argv[]) {
                         EBFail("%s: unexpected tooltip: %s", st, tipped.toolTip.UTF8String);
                 if ([name isEqualToString:@"solar-charging"])
                     EBExpect(fabs(pv.solarRow.gaugeFraction - 0.96) < 0.001, "solar bar is full at the inverter's 5 kW");
+                if ([name hasPrefix:@"battery-"]) {
+                    EBExpect(pv.carRow.targetLabel.length==0 && pv.carRow.trendFrom<0,
+                             "completed or unknown battery has no ETA label or trend");
+                    if ([name isEqual:@"battery-unknown"]) {
+                        EBExpect(pv.carRow.gaugeFraction<0 && [pv.carRow.value isEqual:@"0.0"],
+                                 "unknown battery hides the gauge while measured zero charging remains a power value");
+                        EBExpect([pv.detailsText containsString:@"battery level unknown"], "unknown is explicitly described");
+                    } else EBExpect(pv.carRow.gaugeFraction==1, "reported/last-known full retains the full battery shape");
+                    if ([name hasPrefix:@"battery-last-"]) {
+                        EBExpect([pv.carRow.symbolName isEqual:@"clock.fill"] &&
+                                 [pv.detailsText containsString:@"last known battery 100%"] &&
+                                 [pv.detailsText containsString:@"display only"],
+                                 "last-known full is visibly stale and excluded from current charging estimates");
+                    }
+                }
+                if (!snap.vehicleHasSOC && !snap.vehicleLastKnownSOC)
+                    EBExpect(pv.carRow.gaugeFraction<0,"missing SoC never substitutes a charging-power bar");
                 if ([name hasPrefix:@"charge-eta-"]) {
                     EBChargeEstimate *eta = EBChargeEstimateForSnapshot(snap, @[]);
                     for (NSString *edge in @[@"charge-eta-low-target", @"charge-eta-long"]) {
@@ -1005,8 +1142,11 @@ int main(int argc, const char *argv[]) {
                                  "duration is spatially centered above the target marker");
                         EBExpect(NSMaxY(pv.carRow.targetLabelFrame) <= 11,
                                  "duration stays above the power value and gauge");
-                    } else EBExpect(pv.carRow.targetFraction < 0 && [pv.detailsText containsString:@"ETA"],
-                                    "unavailable ETA explains reason without invented duration");
+                    } else EBExpect(pv.carRow.targetFraction < 0 && [pv.detailsText containsString:eta.detail],
+                                    "no-duration state has no label or marker while Details preserves the reason");
+                    if ([name hasSuffix:@"complete"])
+                        EBExpect(pv.carRow.targetLabel.length == 0 && pv.carRow.trendFrom < 0,
+                                 "completed car has no replacement text, tick or trend arrow");
                 }
                 if ([name isEqualToString:@"soc-estimated"]) {
                     NSMenuItem *vehicle = [pv.gearMenu itemWithTag:9001];
@@ -1020,7 +1160,7 @@ int main(int argc, const char *argv[]) {
                     EBExpect(fabs(pv.carRow.gaugeFraction - 0.58) < 0.001, "car bar is the 58% pack level");
                     EBExpect(fabs(pv.carRow.trendTo - (0.58 + 2400 * 0.9 / 60000)) < 0.001,
                              "trend arrow runs to the level an hour of charging reaches");
-                    EBExpect([pv.detailsText containsString:@"battery 58% est."],
+                    EBExpect([pv.detailsText containsString:@"battery 58% estimated"],
                              "estimated provenance is on the explicit Details");
                     EBExpect(![pv.carRow.subline containsString:@"est."], "no estimate word on the row itself");
                     EBExpect([pv.carRow.accessibilityLabel containsString:@"battery 58% estimated"],

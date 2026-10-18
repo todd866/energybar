@@ -57,8 +57,8 @@ EBChargeEstimate *EBEstimateCharge(EBChargeInput *i, NSArray<NSDictionary *> *sa
     }
     if (i.soc >= r.targetPercent) {
         r.state = i.socEstimated ? @"near-target" : @"target-reached";
-        r.label = i.socEstimated ? @"≈full" : @"✓";
-        if (r.targetPercent < 100 && i.socEstimated) r.label = @"≈target";
+        // This label is a remaining duration. Once no duration remains, leave
+        // the space above the pack empty; completion provenance stays in Details.
         r.detail = i.socEstimated ? @"Estimated target reached · awaiting vehicle confirmation"
                                   : [NSString stringWithFormat:@"%.0f%% reached", r.targetPercent];
         return r;

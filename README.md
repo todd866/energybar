@@ -8,9 +8,13 @@ vehicle state without treating missing data as zero or an estimate as fact.
 ## What it shows
 
 - live PV (orange; the bar is full at the inverter's capacity, `INVERTER_KW` in `.env`), grid flow (a plain bar; the row's name and colour give the direction), and car charging power. With a known state of charge the Car bar is the pack level with a trend arrow to where it will be in an hour, as on Glancebar's battery. The grid row names the live direction: Import (red) or Export (green). With a tariff configured, its daily energy is paired with estimated cost or credit, such as `6.1 kWh · $1.83`. **⋯ → Details** shows both directions and the live hourly cost; **⋯ → Electricity** has the rates. The aligned value column fits two-digit kW readings;
-- 12-hour and 48-hour history. Solar is above the marked zero, split into car (blue), home (grey) and export (green); grid import is below, in red. Rounded axis limits share one linear scale. A hatched band is a gap in the samples, not a zero. Click a bar for its power breakdown and import total, with calendar dates in the 48-hour view;
+- Today and 48-hour history with a conditional outlook. Solar is above the marked zero, split into car (blue), home (grey) and export (green); grid import is below, in red. Rounded axis limits share one linear scale. Missing samples remain gaps, not zeros. Click a bar for its power breakdown and import total, with calendar dates in the 48-hour view;
 - Solar and Charge now as one mode control (orange for solar, green for charge now). Stop is a separate button and asks before sending a remote stop;
 - day totals with explicit partial-coverage caveats and metered shutdown recovery;
+- **⋯ → Statistics…**: daily and Monday-based weekly recorded energy for solar,
+  gross import, gross export and car charging, with independent coverage. A private
+  local store retains up to 90 days; forecasts never enter these totals. See
+  [statistics and retention](docs/statistics.md);
 - direct or estimated vehicle SoC with visible provenance. A direct reading can come from a local helper that writes `~/.cache/energybar/vehicle-cloud.json` (`soc`, `at`, `checkedAt`, optional `rangeKm`, `source`, `error`); both the measurement and check must be within the last 30 minutes, and an `error` is shown rather than a number. **⋯ → Vehicle → Vehicle cloud…** exposes cloud status even while a local estimate is available;
 - charger actions whose HTTP failures are shown instead of silently ignored.
 
@@ -156,7 +160,7 @@ pixel diffs are a same-macOS local gate; CI runs cross-version semantic/layout
 visual checks, sanitizer suites, arm64 architecture checks, and a native bundle
 smoke test.
 
-The JSON dump schema is version 8. `chargingEstimate` exposes the current-rate projection and its availability reason; see [charging estimates](docs/charging-estimates.md). `gridCosts` exposes separate priced import
+The JSON dump schema is version 10. `chargingEstimate` exposes the current-rate projection and its availability reason; see [charging estimates](docs/charging-estimates.md). `forecast.learning` exposes coverage, learned baselines, session summaries and prospective error scores; see [adaptive forecasting](docs/adaptive-forecasting.md). `gridCosts` exposes separate priced import
 and export energy, cost and credit, currency, coverage, active rates and live
 hourly amounts; unavailable costs are null. Fronius output names recovered window energy
 as a lower bound and exposes interval/device coverage; Evnex output distinguishes
@@ -169,13 +173,24 @@ Car charging time uses the configured pack capacity, fresh SoC and Evnex car AC
 power, with a compact approximate duration above the target marker. **⋯ → Details**
 explains the source, efficiency, unknown usable capacity/vehicle limit and taper.
 A configured display target does not change the car's charging limit.
+At or above that target, the remaining-time label and marker disappear; completion
+and estimate provenance remain in Details. A valid estimate below target still shows.
+The Car gauge always represents battery level; missing SoC never substitutes a
+charging-power bar. A saved last-known level uses muted blue and the stale clock,
+with its source and timestamp in Details. It is display history only and cannot
+supply an ETA or establish a new charging anchor. With no recorded level the gauge
+is hidden; measured charging power remains in the Now column.
 
-The existing chart can extend into outlined forecast bars (12h: 8h past + 4h
-future; 48h: 36h past + 12h future). A measured solar baseline and optionally
+The default **Today** chart covers local midnight to midnight, including all
+remaining daylight. The **48h** view keeps 36h past + 12h future. A measured solar baseline and optionally
 approved hourly Open-Meteo radiation support a conditional PV estimate; household
 load excludes the car. The car projection stops at the same unrounded completion
 instant as the ETA, including a partial final bar. Paused/unplugged states project
-no car charging. Missing or stale inputs leave the projection unavailable.
+no car charging. Solar and home remain available when car telemetry is missing;
+unknown car load leaves dependent grid import/export unavailable. Partial outlooks
+show softly filled solar bars with unknown allocations left empty and household values in
+interval details. The Now boundary and future region remain even if all forecast
+inputs are unavailable. Each component expires against its own source clock.
 See [forecast implementation](docs/forecast-implementation.md) and
 [idle site-meter findings](docs/idle-meter-data.md).
 

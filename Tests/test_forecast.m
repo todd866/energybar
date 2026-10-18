@@ -6,7 +6,7 @@ static int fails;
 static NSDate *At(NSDate *now,double seconds) { return [now dateByAddingTimeInterval:seconds]; }
 static EBPowerForecastInput *Input(void) {
     EBPowerForecastInput *i=[EBPowerForecastInput new]; i.now=[NSDate dateWithTimeIntervalSince1970:1792213200];
-    i.inverterW=5000; i.chargerW=3500; i.chargerState=EBChargerStateSolar; i.chargerStatusAt=i.now;
+    i.inverterW=5000; i.chargerW=3500; i.chargerState=EBChargerStateSolar; i.chargerStatusAt=i.now; i.chargerMeterAt=i.now;
     NSMutableArray *pv=[NSMutableArray array],*meters=[NSMutableArray array],*times=[NSMutableArray array],*ghi=[NSMutableArray array];
     for (int n=-48;n<=0;n++) {
         NSDate *t=At(i.now,n*300); [pv addObject:@{@"t":t,@"pvW":@4000}];
@@ -22,7 +22,7 @@ static EBPowerForecastInput *Input(void) {
 }
 int main(void) { @autoreleasepool {
     EBPowerForecastInput *i=Input(); EBPowerForecast *f=EBBuildPowerForecast(i);
-    Expect(f.available,"valid measured data must produce forecast");
+    Expect(f.available && f.solarAvailable && f.homeAvailable && f.carAvailable && f.gridAvailable,"valid measured data must produce all forecast components");
     Expect(fabs([f.carFinishesAt timeIntervalSinceDate:i.now]-9120)<.001,"completion must use unrounded ETA, not hardcoded hours");
     NSDictionary *before=EBForecastAverage(f.rows,At(i.now,0),At(i.now,900));
     Expect(fabs([before[@"chargeW"] doubleValue]-3500)<.001,"before finish current charger AC rate");
@@ -48,21 +48,89 @@ int main(void) { @autoreleasepool {
     Expect(f.available && [EBForecastAverage(f.rows,i.now,At(i.now,900))[@"chargeW"] doubleValue]==0,"paused scenario does not project charging");
     i.chargerState=EBChargerStateUnplugged;f=EBBuildPowerForecast(i);
     Expect(f.available && !f.carFinishesAt,"unplugged has no invented finish");
-    i=Input();i.chargerStatusAt=At(i.now,-151);Expect(!EBBuildPowerForecast(i).available,"stale status suppresses projection");
-    i=Input();i.chargeEstimate.available=NO;i.chargeEstimate.state=@"near-target";Expect(!EBBuildPowerForecast(i).available,"estimated full while still charging must await confirmation");
-    i=Input();i.chargeEstimate.available=NO;i.chargeEstimate.state=@"target-reached";f=EBBuildPowerForecast(i);Expect(f.available && !f.carFinishesAt,"confirmed target has no projected charging load");
-    i=Input();i.chargeEstimate.available=NO;i.chargeEstimate.state=@"stale-meter";Expect(!EBBuildPowerForecast(i).available,"stale active charger power suppresses projection");
-    i=Input();NSMutableDictionary *weather=[i.weather mutableCopy];weather[@"fetchedAt"]=At(i.now,-7201);i.weather=weather;
-    Expect(!EBBuildPowerForecast(i).available,"stale weather must not be replayed as fresh");
-    weather[@"fetchedAt"]=At(i.now,61);i.weather=weather;Expect(!EBBuildPowerForecast(i).available,"future weather timestamp rejected");
-    i=Input();i.solarSamples=@[];Expect(!EBBuildPowerForecast(i).available,"startup missing solar is not zero");
-    i=Input();i.meterSamples=@[];Expect(!EBBuildPowerForecast(i).available,"startup missing home is not zero");
+    i=Input();i.chargerStatusAt=At(i.now,-151);f=EBBuildPowerForecast(i);
+    Expect(f.solarAvailable && f.homeAvailable && !f.carAvailable && !f.gridAvailable,"stale car status must retain solar and home");
+    i=Input();i.chargeEstimate.available=NO;i.chargeEstimate.state=@"near-target";f=EBBuildPowerForecast(i);
+    Expect(f.solarAvailable && f.homeAvailable && !f.carAvailable,"inferred full keeps solar/home while awaiting car confirmation");
+    i=Input();i.chargeEstimate.available=NO;i.chargeEstimate.state=@"target-reached";f=EBBuildPowerForecast(i);
+    Expect(f.available && f.gridAvailable && !f.carFinishesAt,"confirmed target has no projected charging load");
+    i=Input();i.chargeEstimate.available=NO;i.chargeEstimate.state=@"battery-unavailable";i.chargeEstimate.detail=@"vehicle cloud: signed out";f=EBBuildPowerForecast(i);
+    NSDictionary *partial=EBForecastAverage(f.rows,i.now,At(i.now,900));
+    Expect(f.solarAvailable && f.homeAvailable && !f.carAvailable && !f.gridAvailable,"signed-out vehicle cannot hide independent solar and home");
+    Expect(partial[@"pvW"] && partial[@"homeW"] && !partial[@"chargeW"] && !partial[@"supplyW"] && !partial[@"exportW"] && !partial[@"carSolarW"],"unknown car and grid fields must stay absent, never zero");
+    i.chargerState=EBChargerStateWaiting;f=EBBuildPowerForecast(i);
+    Expect(f.gridAvailable && [EBForecastAverage(f.rows,i.now,At(i.now,900))[@"chargeW"] doubleValue]==0,"fresh paused status supports a stopped scenario without any car login");
+    i=Input();i.chargeEstimate.available=NO;i.chargeEstimate.state=@"stale-meter";f=EBBuildPowerForecast(i);
+    Expect(f.solarAvailable && f.homeAvailable && !f.carAvailable,"stale charging meter only suppresses car and dependent grid");
+    i=Input();i.chargerMeterAt=At(i.now,-421);f=EBBuildPowerForecast(i);
+    Expect(!f.carAvailable && f.homeAvailable && f.solarAvailable,"meter clock independently validates a supplied charging estimate");
+    i=Input();i.chargerState=EBChargerStateFault;f=EBBuildPowerForecast(i);
+    Expect(!f.carAvailable && f.solarAvailable && f.homeAvailable,"charger fault cannot erase the solar outlook");
+    i=Input();i.chargeEstimate.seconds=NAN;f=EBBuildPowerForecast(i);
+    Expect(!f.carAvailable && f.solarAvailable,"invalid completion time cannot contaminate independent projection");
+    i=Input();NSMutableDictionary *weather=[i.weather mutableCopy];weather[@"fetchedAt"]=At(i.now,-7201);i.weather=weather;f=EBBuildPowerForecast(i);
+    Expect(!f.solarAvailable && f.homeAvailable && f.carAvailable && !f.gridAvailable,"stale weather cannot be replayed, but measured home/car assumptions remain");
+    weather[@"fetchedAt"]=At(i.now,61);i.weather=weather;Expect(!EBBuildPowerForecast(i).solarAvailable,"future weather timestamp rejected for solar");
+    i=Input();i.solarSamples=@[];f=EBBuildPowerForecast(i);
+    Expect(!f.solarAvailable && !f.homeAvailable && f.carAvailable && !f.gridAvailable,"startup missing solar is unknown, not zero");
+    i=Input();i.meterSamples=@[];f=EBBuildPowerForecast(i);
+    Expect(f.solarAvailable && !f.homeAvailable && !f.gridAvailable,"startup missing home must retain independently calibrated solar");
+    i=[EBPowerForecastInput new];f=EBBuildPowerForecast(i);
+    Expect(!f.available && f.rows.count==0 && f.asOf && !f.carFinishesAt,"all data unavailable retains the forecast boundary without invented rows");
+    i=Input();i.weather=@{@"fetchedAt":i.now,@"response":@[]};f=EBBuildPowerForecast(i);
+    Expect(!f.solarAvailable && f.homeAvailable,"malformed weather must fail closed without blocking home");
+    NSArray *mixed=@[@{@"start":i.now,@"end":At(i.now,450),@"pvW":@1000,@"chargeW":@0},
+                     @{@"start":At(i.now,450),@"end":At(i.now,900),@"pvW":@2000}];
+    partial=EBForecastAverage(mixed,i.now,At(i.now,900));
+    Expect([partial[@"pvW"] doubleValue]==1500 && !partial[@"chargeW"],"partial component coverage cannot average missing values as zero");
+    i=Input();NSMutableArray *nightSolar=[NSMutableArray array];
+    for (NSDictionary *row in i.solarSamples) {
+        NSMutableDictionary *copy=[row mutableCopy];
+        if ([i.now timeIntervalSinceDate:row[@"t"]]<=900) copy[@"pvW"]=@0;
+        [nightSolar addObject:copy];
+    }
+    i.solarSamples=nightSolar;
+    NSMutableDictionary *nightResponse=[i.weather[@"response"] mutableCopy];
+    NSMutableDictionary *nightHours=[nightResponse[@"hourly"] mutableCopy];
+    NSMutableArray *nightRadiation=[nightHours[@"shortwave_radiation"] mutableCopy];
+    nightRadiation[5]=@0; // The hour immediately ahead is dark; later daylight remains 500 W/m².
+    nightHours[@"shortwave_radiation"]=nightRadiation; nightResponse[@"hourly"]=nightHours;
+    i.weather=@{@"fetchedAt":i.now,@"response":nightResponse}; f=EBBuildPowerForecast(i);
+    Expect(f.solarAvailable && [EBForecastAverage(f.rows,i.now,At(i.now,900))[@"pvW"] doubleValue]==0 &&
+           [EBForecastAverage(f.rows,At(i.now,3600),At(i.now,4500))[@"pvW"] doubleValue]>0,
+           "overnight measured zero must not erase upcoming daylight radiation");
     i=Input();f=EBBuildPowerForecast(i);
     Expect(!EBForecastAverage(f.rows,At(i.now,24*3600),At(i.now,25*3600)),"past available horizon is unknown");
+    [NSTimeZone setDefaultTimeZone:[NSTimeZone timeZoneWithName:@"America/Los_Angeles"]];
+    i=[EBPowerForecastInput new];
+    i.now=[[NSISO8601DateFormatter new] dateFromString:@"2026-11-01T00:00:00-07:00"];
+    i.chargerState=EBChargerStateWaiting; i.chargerStatusAt=i.now;
+    f=EBBuildPowerForecast(i);
+    Expect(EBForecastAverage(f.rows,At(i.now,24*3600),At(i.now,25*3600))[@"chargeW"] &&
+           !EBForecastAverage(f.rows,At(i.now,25*3600),At(i.now,26*3600)),
+           "Today projection covers the complete 25-hour local day and stops at its boundary");
+    [NSTimeZone setDefaultTimeZone:[NSTimeZone timeZoneForSecondsFromGMT:0]];
     Expect([before[@"pvLowW"] doubleValue]<4000 && [before[@"pvHighW"] doubleValue]<=5000,"uncertainty envelope and inverter cap");
     Expect(!EBForecastRequestURL(nil) && !EBForecastRequestURL(@{}),"no ongoing consent means no forecast request");
     Expect(!EBForecastRequestURL(@{@"enabled":@YES,@"provider":@"Open-Meteo",@"latitude":@1,@"longitude":@2}),"one-off permission is not recurring consent");
     NSURL *request=EBForecastRequestURL(@{@"enabled":@YES,@"provider":@"Open-Meteo",@"consentVersion":@1,@"latitude":@(12.34567),@"longitude":@(98.76543)});
     Expect([request.host isEqual:@"api.open-meteo.com"] && [request.absoluteString containsString:@"latitude=12.346"] && [request.absoluteString containsString:@"longitude=98.765"],"request sends only the rounded position to the fixed provider");
+    i=Input();
+    NSCalendar *learnCalendar=[NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];learnCalendar.timeZone=[NSTimeZone timeZoneForSecondsFromGMT:0];
+    NSInteger weekday=[learnCalendar component:NSCalendarUnitWeekday fromDate:i.now];
+    NSString *key=[NSString stringWithFormat:@"%@/%ld",weekday==1||weekday==7?@"weekend":@"weekday",(long)[learnCalendar component:NSCalendarUnitHour fromDate:i.now]];
+    i.learnedModel=@{@"asOf":@(i.now.timeIntervalSince1970),@"timeZone":@"UTC",@"homeBuckets":@{key:@{@"median":@800,@"p10":@500,@"p90":@1200}},
+        @"solarCalibration":@{@"available":@YES,@"factor":@.8,@"lowFactor":@.5,@"highFactor":@1.2}};
+    f=EBBuildPowerForecast(i);NSDictionary *learned=EBForecastAverage(f.rows,i.now,At(i.now,900));
+    Expect([learned[@"homeW"] intValue]==800 && [learned[@"pvW"] intValue]==3200 && [learned[@"basePvW"] intValue]==4000,"learned home and solar correction preserve uncorrected solar vintage");
+    Expect([learned[@"supplyW"] intValue]==1100,"grid uses learned home rather than recent fallback");
+    Expect([learned[@"supplyLowW"] doubleValue]<=[learned[@"supplyW"] doubleValue]&&[learned[@"supplyHighW"] doubleValue]>=[learned[@"supplyW"] doubleValue],"conditional grid range encloses central balance");
+    Expect([EBForecastAverage(f.rows,At(i.now,3600),At(i.now,4500))[@"homeW"] intValue]==1000,"untrained hour uses existing recent fallback");
+    i.meterSamples=@[];f=EBBuildPowerForecast(i);
+    Expect(f.homeAvailable && !EBForecastAverage(f.rows,At(i.now,3600),At(i.now,4500))[@"homeW"],"without recent history untrained hours remain absent");
+    i.chargeEstimate.available=NO;i.chargeEstimate.state=@"battery-unavailable";f=EBBuildPowerForecast(i);
+    Expect(f.homeAvailable&&f.solarAvailable&&!f.gridAvailable&&!EBForecastAverage(f.rows,i.now,At(i.now,900))[@"supplyLowW"],"learned charging history cannot fill unknown current battery or grid requirements");
+    NSMutableDictionary *expired=[i.learnedModel mutableCopy];expired[@"asOf"]=@(i.now.timeIntervalSince1970-601);i.learnedModel=expired;f=EBBuildPowerForecast(i);
+    Expect(!f.homeAvailable&&!f.learning,"stale prepared model cannot survive indefinitely");
     printf("forecast boundary tests: %s\n",fails?"FAILED":"ok");return fails?1:0;
 } }

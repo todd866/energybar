@@ -426,6 +426,9 @@ int main(void) {
         expect([gapDump[@"socSource"] isEqualToString:@"none"]
                && gapDump[@"socPercent"] == nil,
                @"gap JSON does not leak the stale manual percentage");
+        expect([gapDump[@"lastKnownSOC"][@"percent"] doubleValue]==50 &&
+               [gapDump[@"lastKnownSOC"][@"source"] isEqual:@"manual"],
+               @"telemetry gap retains the separate timestamped historical display reading");
 
         NSDate *gapCutoff = [NSDate dateWithTimeIntervalSince1970:
                              gapInf.estimate.continuityUnknownAt];
@@ -502,6 +505,53 @@ int main(void) {
         [noAnchor setAnchorPercent:100 at:t0 source:EBSoCSourceFullCharge];
         [noAnchor updateWithSamples:solarPause now:[t0 dateByAddingTimeInterval:1800]];
         expect(!noAnchor.available, @"legacy guessed-full source is rejected");
+        expect(!noAnchor.dictionaryValue[@"lastKnownSOC"], @"solar pause cannot invent historical full either");
+
+        NSString *fullPath=[dir stringByAppendingPathComponent:@"reported-full.json"];
+        EBVehicleInferredProvider *reportedFull=[[EBVehicleInferredProvider alloc]
+            initWithPath:fullPath capacityWh:60000 efficiency:.9];
+        NSDate *fullAt=[NSDate dateWithTimeIntervalSinceNow:-60];
+        expect([reportedFull setAnchorPercent:100 at:fullAt source:EBSoCSourceManual], @"owner report establishes a manual full anchor");
+        [reportedFull updateWithSamples:@[Row(fullAt,0,EBChargerStateWaiting)] now:fullAt];
+        expect(reportedFull.hasSOC && reportedFull.socPercent==100, @"completed zero-power anchor retains full level");
+        NSString *fullManualPath=[dir stringByAppendingPathComponent:@"reported-full-manual.json"];
+        NSData *fullManualData=[NSJSONSerialization dataWithJSONObject:@{@"soc":@100,@"socUpdatedAt":ISODate(fullAt)} options:0 error:nil];
+        [fullManualData writeToFile:fullManualPath atomically:YES];
+        EBVehicleManualProvider *fullManual=[[EBVehicleManualProvider alloc] initWithPath:fullManualPath];
+        // Persistence rounds to milliseconds, as both real anchor stores do.
+        [reportedFull setAnchorPercent:100 at:fullManual.socUpdatedAt source:EBSoCSourceManual];
+        [reportedFull updateWithSamples:@[] now:fullManual.socUpdatedAt];
+        id<EBVehicleProvider> confirmedFull=EBResolveVehicle(@[reportedFull,fullManual,stub]);
+        expect(confirmedFull.hasSOC && confirmedFull.socPercent==100 && !confirmedFull.socIsEstimate &&
+               [confirmedFull.dictionaryValue[@"socSource"] isEqual:@"manual"],
+               @"fresh explicit full confirmation remains manual instead of being downgraded to inferred full");
+        NSDate *gapLater=[fullAt dateByAddingTimeInterval:1200];
+        [reportedFull updateWithSamples:@[] now:gapLater];
+        expect(!reportedFull.hasSOC && [reportedFull.dictionaryValue[@"lastKnownSOC"][@"percent"] doubleValue]==100,
+               @"missing auth/telemetry keeps full history without claiming a current level");
+        EBVehicleInferredProvider *fullRestart=[[EBVehicleInferredProvider alloc]
+            initWithPath:fullPath capacityWh:60000 efficiency:.9];
+        [fullRestart updateWithSamples:@[] now:gapLater];
+        id<EBVehicleProvider> historicalFull=EBResolveVehicle(@[fullRestart,stub]);
+        expect(!historicalFull.hasSOC && historicalFull.dictionaryValue[@"socPercent"]==nil &&
+               [historicalFull.dictionaryValue[@"lastKnownSOC"][@"percent"] doubleValue]==100,
+               @"restart restores last full for display only, separate from ETA inputs");
+        [fullRestart updateWithSamples:@[Row(gapLater,0,EBChargerStateUnplugged)] now:gapLater];
+        expect(!fullRestart.hasSOC && [fullRestart.dictionaryValue[@"lastKnownSOC"][@"percent"] doubleValue]==100,
+               @"unplug invalidates current full but preserves dated history");
+        expect([fullRestart clearAllState] && fullRestart.dictionaryValue[@"lastKnownSOC"]==nil,
+               @"explicit clear removes historical battery data too");
+        NSString *cloudHistoryPath=[dir stringByAppendingPathComponent:@"cloud-history.json"];
+        EBVehicleInferredProvider *cloudHistory=[[EBVehicleInferredProvider alloc]
+            initWithPath:cloudHistoryPath capacityWh:60000 efficiency:.9];
+        expect(([cloudHistory rememberLastKnownSOC:@{@"percent":@100,@"at":ISODate(fullAt),@"source":@"cloud",@"estimated":@NO}]),
+               @"a genuine vehicle reading can be retained as display history");
+        expect(!cloudHistory.hasSOC && cloudHistory.dictionaryValue[@"socPercent"]==nil,
+               @"historical cloud level never establishes a charging anchor");
+        cloudHistory=[[EBVehicleInferredProvider alloc] initWithPath:cloudHistoryPath capacityWh:60000 efficiency:.9];
+        id<EBVehicleProvider> signedOutHistory=EBResolveVehicle(@[stub,cloudHistory]);
+        expect(!signedOutHistory.hasSOC && [signedOutHistory.dictionaryValue[@"lastKnownSOC"][@"percent"] doubleValue]==100,
+               @"signed-out provider after restart preserves dated cloud history without current telemetry");
 
         // Manual set → inferred charging → unplug. The unplug tombstone must
         // suppress both the estimate and its old direct-manual fallback.
@@ -754,7 +804,8 @@ int main(void) {
         expect([nocap.statusLine containsString:@"EV_BATTERY_KWH"], @"hints config");
 
         id<EBVehicleProvider> r3 = EBResolveVehicle(@[obd, live, nocap, stub]);
-        expect([r3 isKindOfClass:EBVehicleStubProvider.class], @"falls to stub");
+        expect(!r3.hasSOC && [r3.dictionaryValue[@"lastKnownSOC"][@"percent"] doubleValue]==50,
+               @"missing capacity blocks inference but keeps the recorded display level");
         expect(![r3.dictionaryValue[@"estimated"] boolValue],
                @"stub dump explicitly not estimated");
 

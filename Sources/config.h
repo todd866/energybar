@@ -13,6 +13,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(copy, nullable) NSDate *expiresAt;
 @property(copy) NSString *tokenCachePath;
 @property(copy) NSString *samplesPath;
+@property(copy) NSString *statisticsPath;
 @property(copy) NSString *sessionsPath;
 @property(copy) NSString *froniusArchivePath;
 @property double evBatteryWh;

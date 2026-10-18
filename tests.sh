@@ -33,6 +33,13 @@ run_foundation test_status_glyph Sources/pure.m Tests/test_status_glyph.m
 run_foundation test_fixture Sources/parse.m Sources/fixture.m Tests/test_fixture.m
 run_foundation test_sessions Sources/sessions.m Tests/test_sessions.m
 run_foundation test_fronius_archive Sources/fronius_archive.m Tests/test_fronius_archive.m
+run_foundation test_statistics Sources/store.m Sources/fronius_archive.m Sources/statistics.m Tests/test_statistics.m
+run_foundation test_learning Sources/store.m Sources/pure.m Sources/charge_estimate.m Sources/forecast.m Sources/learning.m Tests/test_learning.m
+
+"$CC" "${COMMON[@]}" Sources/store.m Sources/fronius_archive.m Sources/statistics.m \
+    Sources/statistics_view.m Sources/chart.m Sources/forecast.m Sources/charge_estimate.m \
+    Sources/pure.m Tests/test_statistics_view.m -framework Cocoa -o "$BUILD_DIR/test_statistics_view"
+"$BUILD_DIR/test_statistics_view"
 
 "$CC" "${COMMON[@]}" \
     Sources/pure.m Sources/parse.m Sources/store.m Sources/tariff.m Sources/soc.m Sources/chart.m \
@@ -48,7 +55,7 @@ fi
 "$CC" "${COMMON[@]}" \
     Sources/config.m Sources/tariff.m Sources/fixture.m Sources/pure.m Sources/parse.m Sources/store.m \
     Sources/sessions.m Sources/fronius_archive.m Sources/soc.m Sources/chart.m Sources/tiles.m \
-    Sources/charge_estimate.m Sources/forecast.m Sources/popover.m Sources/vehicle.m Tests/test_presentation.m \
+    Sources/charge_estimate.m Sources/forecast.m Sources/popover.m Sources/vehicle.m Sources/statistics.m Sources/learning.m Sources/statistics_view.m Tests/test_presentation.m \
     -framework Cocoa -framework ServiceManagement -o "$BUILD_DIR/test_presentation"
 "$BUILD_DIR/test_presentation"
 
@@ -74,6 +81,14 @@ if [[ "${ENERGYBAR_SANITIZERS:-0}" == "1" ]]; then
         Sources/store.m Sources/tariff.m Tests/test_tariff.m \
         -framework Foundation -o "$BUILD_DIR/test_tariff_sanitized"
     "$BUILD_DIR/test_tariff_sanitized"
+    "$CC" "${COMMON[@]}" "${SAN[@]}" Sources/store.m Sources/fronius_archive.m \
+        Sources/statistics.m Tests/test_statistics.m -framework Foundation \
+        -o "$BUILD_DIR/test_statistics_sanitized"
+    "$BUILD_DIR/test_statistics_sanitized"
+    "$CC" "${COMMON[@]}" "${SAN[@]}" Sources/store.m Sources/pure.m \
+        Sources/charge_estimate.m Sources/forecast.m Sources/learning.m Tests/test_learning.m \
+        -framework Foundation -o "$BUILD_DIR/test_learning_sanitized"
+    "$BUILD_DIR/test_learning_sanitized"
 fi
 
 echo "tests ok"

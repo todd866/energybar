@@ -16,8 +16,11 @@
 #import "tiles.h"
 #import "popover.h"
 #import "vehicle.h"
+#import "statistics.h"
+#import "statistics_view.h"
+#import "learning.h"
 
-static NSString * const EBVersion = @"0.5.3";
+static NSString * const EBVersion = @"0.5.4";
 static NSString * const EBCognitoClientId = @"rol3lsv2vg41783550i18r7vi";
 static NSString * const EBCognitoURL = @"https://cognito-idp.ap-southeast-2.amazonaws.com/";
 static NSString * const EBEvnexBase = @"https://client-api.evnex.io";
@@ -615,6 +618,13 @@ static NSColor *EBBarColor(EBBarState st, NSString *glyph) {
 @property BOOL presentationInFlight;
 @property BOOL presentationPending;
 @property(copy) NSDate *weatherNextAttemptAt;
+/// Access document/update clock only on EBStoreQueue; publish prepared report on main.
+@property(copy) NSDate *statisticsNextUpdateAt;
+@property(copy) NSDictionary *statisticsDocument;
+@property(copy) NSDictionary *learningModel;
+@property(copy) NSString *learningError;
+@property(strong) NSMutableArray<NSDictionary *> *learningPV;
+@property(strong) EBStatisticsReport *statisticsReport;
 @property double popoverOpenStartedAt;
 @property double popoverShownMilliseconds;
 @property double popoverEventMilliseconds;
@@ -673,12 +683,14 @@ static NSArray<NSDictionary *> *EBChartPVRows(NSArray<EBFroniusPVInterval *> *ar
 }
 
 static EBPowerForecast *EBForecastForSnapshot(EBSnapshotView *vm, NSArray *solarRows,
-                                              NSArray *samples, NSDictionary *weather) {
+                                              NSArray *samples, NSDictionary *weather, NSDictionary *learnedModel) {
     EBPowerForecastInput *input = [EBPowerForecastInput new];
     input.now = vm.referenceDate ?: [NSDate date];
     input.solarSamples = solarRows; input.meterSamples = samples; input.weather = weather;
+    input.learnedModel = learnedModel;
     input.inverterW = vm.inverterW; input.chargerW = vm.chargeW;
     input.chargerStatusAt = vm.evnexAt;
+    input.chargerMeterAt = vm.gridAsOf;
     input.chargerState = vm.chargerOK ? EBComputeChargerState(vm.ocppStatus, vm.chargingLogic,
         vm.chargingCurrentControl, vm.chargeNow, vm.haveOcpp) : EBChargerStateUnknown;
     input.chargeEstimate = EBChargeEstimateForSnapshot(vm, samples);
@@ -1012,6 +1024,12 @@ static NSDictionary *EBForecastCache(void) {
                 s.sessionError = self.snap.sessionError;
             }
             self.snap = s;
+            if (!self.learningPV) self.learningPV = [NSMutableArray array];
+            NSDate *learningAt = s.pvOK && s.pvAt ? s.pvAt : sampleAt;
+            [self.learningPV addObject:s.pvOK ? @{@"t":learningAt,@"pvW":@(s.pvW)} : @{@"t":learningAt}];
+            NSDate *learningCutoff=[sampleAt dateByAddingTimeInterval:-3*3600];
+            while (self.learningPV.count && [self.learningPV[0][@"t"] compare:learningCutoff]==NSOrderedAscending)
+                [self.learningPV removeObjectAtIndex:0];
             if (s.pvOK) {
                 if (!self.livePV) self.livePV = [NSMutableArray array];
                 NSDate *at = s.pvAt ?: [NSDate date];
@@ -1041,12 +1059,13 @@ static NSDictionary *EBForecastCache(void) {
     // TODO(obd): refresh OBD cache read here; poll sidecar only while charger plugged.
     self.vehicle = EBResolveVehicle(@[self.vehicleOBD, self.vehicleCloud, self.vehicleLive,
                                       self.vehicleInferred, self.vehicleManual]);
+    BOOL lastKnownSaved = [self.vehicleInferred rememberLastKnownSOC:self.vehicle.dictionaryValue[@"lastKnownSOC"]];
     NSMutableArray<NSString *> *problems = [NSMutableArray array];
     if (self.vehicleManual.persistenceError)
         [problems addObject:self.vehicleManual.persistenceError.localizedDescription];
     if (self.vehicleInferred.persistenceError)
         [problems addObject:self.vehicleInferred.persistenceError.localizedDescription];
-    if (!inferredSaved && !problems.count)
+    if ((!inferredSaved || !lastKnownSaved) && !problems.count)
         [problems addObject:@"Vehicle state could not be persisted"];
     self.vehicleStorageWarning = problems.count
         ? [NSString stringWithFormat:@"Vehicle state not saved — %@",
@@ -1120,8 +1139,13 @@ static NSDictionary *EBForecastCache(void) {
     vm.referenceDate = now;
     NSString *samplesPath = self.config.samplesPath;
     NSString *tariffPath = self.config.tariffPath;
+    NSString *statisticsPath = self.config.statisticsPath;
+    NSString *statisticsSource = EBStableSourceID(@"statistics", [NSString stringWithFormat:@"%lu:%@/%@",
+        (unsigned long)self.config.froniusAPI.length, self.config.froniusAPI ?: @"", self.config.chargePointId ?: @""]);
     NSArray *archive = self.froniusArchive ?: @[];
     NSArray *livePV = [self.livePV copy] ?: @[];
+    NSArray *learningPV = [self.learningPV copy] ?: @[];
+    NSString *learningPath = statisticsPath.length ? [statisticsPath.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"learning.json"] : nil;
     // Store reads are serialized with writes; none runs on the opening action.
     dispatch_async(EBStoreQueue(), ^{
         NSArray *samples = EBStoreLoad(samplesPath, EBStoreMaxAge);
@@ -1131,6 +1155,30 @@ static NSDictionary *EBForecastCache(void) {
         vm.tariffError = tariffError.localizedDescription;
         NSCalendar *calendar = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
         calendar.timeZone = tariff.timeZone ?: NSTimeZone.localTimeZone;
+        BOOL learningDue=NO;
+        NSDictionary *learningLedger=nil;
+        if (statisticsPath.length && (!self.statisticsNextUpdateAt || [self.statisticsNextUpdateAt compare:now] != NSOrderedDescending)) {
+            self.statisticsNextUpdateAt = [now dateByAddingTimeInterval:300];
+            NSError *statisticsError = nil;
+            NSDictionary *saved = EBStatisticsUpdate(statisticsPath, statisticsSource, samples, archive, now, &statisticsError);
+            if (saved) self.statisticsDocument = saved;
+            // A changed source must not inherit the previous source's prepared totals.
+            NSDictionary *document = [self.statisticsDocument[@"source"] isEqual:statisticsSource] ? self.statisticsDocument : @{};
+            EBStatisticsReport *report = EBStatisticsSummarize(document ?: @{}, now, calendar.timeZone);
+            report.error = statisticsError.localizedDescription;
+            dispatch_async(dispatch_get_main_queue(), ^{ self.statisticsReport = report; });
+            NSError *learningError=nil;
+            NSDictionary *previous=EBLearningLoad(learningPath,statisticsSource,&learningError);
+            if (!learningError && !statisticsError) {
+                learningLedger=EBLearningObserve(previous,statisticsSource,learningPV,snapshot.sessionHistory.sessions ?: @[],now,&learningError);
+                if (learningLedger) {
+                    self.learningModel=EBLearningModel(document,learningLedger,now,calendar.timeZone);
+                    learningDue=YES;
+                }
+            }
+            self.learningError=(learningError ?: statisticsError).localizedDescription;
+            if (self.learningError) self.learningModel=nil;
+        }
         NSDate *day = [calendar startOfDayForDate:now];
         vm.today = EBStoreIntegrateSince(samples, day, now);
         vm.gridCostToday = EBTariffIntegrate(samples, day, now, tariff);
@@ -1173,6 +1221,8 @@ static NSDictionary *EBForecastCache(void) {
             vm.vehicleHasReady = self.vehicle.hasReady;
             vm.vehicleReady = self.vehicle.readyToCharge;
             vm.vehicleSOCIsEstimate = self.vehicle.socIsEstimate;
+            vm.vehicleLastKnownSOC = self.vehicle.dictionaryValue[@"lastKnownSOC"];
+            vm.vehicleSOCSource = self.vehicle.dictionaryValue[@"socSource"] ?: self.vehicle.dictionaryValue[@"source"];
             vm.vehicleCapacityWh = self.config.evBatteryWh;
             vm.vehicleChargeEfficiency = self.config.evChargeEfficiency;
             vm.vehicleChargeTargetPercent = self.config.evChargeTargetPercent;
@@ -1182,10 +1232,19 @@ static NSDictionary *EBForecastCache(void) {
                 ? [@"vehicle cloud: " stringByAppendingString:self.vehicleCloud.lastError] : nil;
             vm.inverterW = self.config.inverterW;
             vm.vehicleHasStoredState = self.vehicle.hasSOC || self.vehicle.hasReady
-                || self.vehicle.socInvalidatedAt != nil;
+                || self.vehicle.socInvalidatedAt != nil || vm.vehicleLastKnownSOC != nil;
             vm.referenceDate = [NSDate date];
             dispatch_async(EBStoreQueue(), ^{
-                vm.forecast = EBForecastForSnapshot(vm, solarRows, samples, weather);
+                vm.forecast = EBForecastForSnapshot(vm, solarRows, samples, weather, self.learningModel);
+                if (learningDue) {
+                    EBChargeEstimate *eta=EBChargeEstimateForSnapshot(vm,samples);
+                    NSDictionary *context=@{@"socSource":vm.vehicleSOCSource ?: @"unknown",@"socEstimated":@(vm.vehicleSOCIsEstimate),
+                        @"socAvailable":@(vm.vehicleHasSOC),@"targetKnown":@(eta.targetKnown),@"etaAvailable":@(eta.available)};
+                    NSDictionary *recorded=EBLearningRecord(learningLedger,self.statisticsDocument,vm.forecast,context,[NSDate date]);
+                    NSError *learningError=nil;
+                    if (!EBLearningSave(learningPath,recorded,&learningError)) self.learningError=learningError.localizedDescription;
+                }
+                vm.forecast.learningError=self.learningError;
                 dispatch_async(dispatch_get_main_queue(), ^{
                     self.presentationInFlight = NO;
                     if (self.presentationPending || self.snap != snapshot) {
@@ -1225,9 +1284,9 @@ static NSDictionary *EBForecastCache(void) {
         self.views.detailsText = [details componentsJoinedByString:@"\n\n"];
         [self.views.carRow reload];
     }
-    NSTimeInterval weatherAge = vm.forecast.weatherFetchedAt ? [now timeIntervalSinceDate:vm.forecast.weatherFetchedAt] : INFINITY;
     BOOL staleCharge = [eta.state hasPrefix:@"stale-"];
-    if (weatherAge > 7200 || weatherAge < -60 || staleCharge) [self.views.chart suppressForecast];
+    [self.views.chart expireForecastAt:now];
+    if (staleCharge) [self.views.chart suppressCarForecast];
     NSTimeInterval meterAge = vm.gridAsOf ? [now timeIntervalSinceDate:vm.gridAsOf] : INFINITY;
     if (vm.gridStale || meterAge > 420 || meterAge < -60) {
         self.views.gridRow.symbolName = @"clock.fill";
@@ -1273,7 +1332,7 @@ static NSDictionary *EBForecastCache(void) {
 
 - (void)changeWindow:(NSSegmentedControl *)sender {
     if (!self.views.chart) return;
-    self.views.chart.windowSeconds = sender.selectedSegment == 1 ? 48 * 3600 : 12 * 3600;
+    self.views.chart.windowSeconds = sender.selectedSegment == 1 ? 48 * 3600 : 24 * 3600;
     [self updatePopoverBody];
 }
 
@@ -1345,6 +1404,16 @@ static NSDictionary *EBForecastCache(void) {
     scroll.documentView = text;
     alert.accessoryView = scroll;
     [alert runModal];
+}
+
+- (void)showStatistics:(id)sender {
+    (void)sender;
+    EBStatisticsReport *report = self.statisticsReport;
+    if (!report) {
+        report = [EBStatisticsReport new];
+        report.error = @"No recorded history is available yet. Statistics prepare in the background.";
+    }
+    [EBBuildStatisticsAlert(report) runModal];
 }
 
 - (void)refreshNow:(id)sender {
@@ -1693,6 +1762,8 @@ static int EBDump(BOOL jsonMode, NSString *renderPrefix) {
     estimateView.referenceDate = dumpNow;
     estimateView.vehicleHasSOC = vehicle.hasSOC; estimateView.vehicleSOC = vehicle.socPercent;
     estimateView.vehicleSOCIsEstimate = vehicle.socIsEstimate;
+    estimateView.vehicleLastKnownSOC = vehicle.dictionaryValue[@"lastKnownSOC"];
+    estimateView.vehicleSOCSource = vehicle.dictionaryValue[@"socSource"] ?: vehicle.dictionaryValue[@"source"];
     estimateView.vehicleSOCAt = vehicle.socUpdatedAt;
     estimateView.vehicleCapacityWh = c.evBatteryWh; estimateView.vehicleChargeEfficiency = c.evChargeEfficiency;
     estimateView.vehicleChargeTargetPercent = c.evChargeTargetPercent;
@@ -1702,14 +1773,22 @@ static int EBDump(BOOL jsonMode, NSString *renderPrefix) {
     estimateView.vehicleLine = vehicle.statusLine;
     estimateView.vehicleCloudLine = cloud.statusLine;
     estimateView.vehicleHasReady = vehicle.hasReady; estimateView.vehicleReady = vehicle.readyToCharge;
-    estimateView.vehicleHasStoredState = vehicle.hasSOC || vehicle.hasReady || vehicle.socInvalidatedAt != nil;
+    estimateView.vehicleHasStoredState = vehicle.hasSOC || vehicle.hasReady || vehicle.socInvalidatedAt != nil
+        || estimateView.vehicleLastKnownSOC != nil;
     estimateView.inverterW = c.inverterW; estimateView.tariff = c.tariff; estimateView.tariffError = c.tariffError;
     estimateView.gridCostToday = gridCosts; estimateView.today = EBStoreIntegrateSince(samples, dumpDay, dumpNow);
     estimateView.pvArchiveAvailable = archiveDay.hasData; estimateView.pvArchiveWh = archiveDay.energyWh;
     estimateView.pvArchiveIntervalCount = archiveDay.intervalCount;
     NSArray *dumpLivePV = s.pvOK && s.pvAt ? @[@{@"t":s.pvAt,@"pvW":@(s.pvW)}] : @[];
+    NSString *learningSource=EBStableSourceID(@"statistics",[NSString stringWithFormat:@"%lu:%@/%@",
+        (unsigned long)c.froniusAPI.length,c.froniusAPI ?: @"",c.chargePointId ?: @""]);
+    NSError *learningError=nil,*statisticsError=nil;
+    NSDictionary *learningLedger=EBLearningLoad([c.statisticsPath.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"learning.json"],learningSource,&learningError);
+    NSDictionary *statisticsDocument=EBStatisticsLoad(c.statisticsPath,learningSource,&statisticsError);
+    NSDictionary *learnedModel=!learningError && !statisticsError ? EBLearningModel(statisticsDocument ?: @{},learningLedger ?: @{},dumpNow,billingCalendar.timeZone) : nil;
     estimateView.forecast = EBForecastForSnapshot(estimateView,
-        EBChartPVRows(archiveIntervals ?: @[], dumpLivePV), samples, EBForecastCache());
+        EBChartPVRows(archiveIntervals ?: @[], dumpLivePV), samples, EBForecastCache(), learnedModel);
+    estimateView.forecast.learningError=(learningError ?: statisticsError).localizedDescription;
     if (renderPrefix.length && !EBRenderLive(estimateView,
         [samples arrayByAddingObjectsFromArray:EBChartPVRows(archiveIntervals ?: @[], dumpLivePV)], renderPrefix)) {
         fprintf(stderr, "Live render failed\n"); return 2;
@@ -1736,16 +1815,35 @@ static int EBDump(BOOL jsonMode, NSString *renderPrefix) {
             s.sessionHistory.sessions ?: @[], sessionDay, sessionThrough);
         BOOL sessionDayAvailable = s.sessionHistory.complete && sessionThrough &&
             [sessionThrough compare:sessionDay] != NSOrderedAscending && sessionDayTotal.exact;
+        NSCalendar *chartCalendar=NSCalendar.currentCalendar;
+        NSDate *todayStart=[chartCalendar startOfDayForDate:dumpNow];
+        NSDate *todayEnd=[chartCalendar dateByAddingUnit:NSCalendarUnitDay value:1 toDate:todayStart options:0];
         NSDictionary *out = @{
-            @"schemaVersion": @8,
+            @"schemaVersion": @10,
             @"chargingEstimate": chargeEstimate.dictionaryValue,
             @"forecast": @{
                 @"available": @(estimateView.forecast.available),
+                @"solarAvailable": @(estimateView.forecast.solarAvailable),
+                @"homeAvailable": @(estimateView.forecast.homeAvailable),
+                @"carAvailable": @(estimateView.forecast.carAvailable),
+                @"gridAvailable": @(estimateView.forecast.gridAvailable),
                 @"detail": estimateView.forecast.detail ?: @"",
+                @"learning": estimateView.forecast.learning ?: @{},
+                @"learningError": estimateView.forecast.learningError ?: NSNull.null,
                 @"asOf": EBJSONDateString(estimateView.forecast.asOf) ?: NSNull.null,
                 @"weatherFetchedAt": EBJSONDateString(estimateView.forecast.weatherFetchedAt) ?: NSNull.null,
                 @"carFinishesAt": EBJSONDateString(estimateView.forecast.carFinishesAt) ?: NSNull.null,
                 @"intervalCount": @(estimateView.forecast.rows.count),
+                @"next15Minutes": EBForecastAverage(estimateView.forecast.rows,
+                    estimateView.forecast.asOf, [estimateView.forecast.asOf dateByAddingTimeInterval:900]) ?: @{},
+                @"today": @{
+                    @"start": EBJSONDateString(todayStart),
+                    @"end": EBJSONDateString(todayEnd),
+                    @"timeZone": chartCalendar.timeZone.name,
+                    @"remainingSeconds": @([todayEnd timeIntervalSinceDate:dumpNow]),
+                    // A field is present only with complete component coverage through midnight.
+                    @"remainingAveragePower": EBForecastAverage(estimateView.forecast.rows, dumpNow, todayEnd) ?: @{},
+                },
                 @"completionBar": completionBar,
                 @"afterCompletionBar": afterCompletionBar,
             },

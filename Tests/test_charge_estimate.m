@@ -22,6 +22,22 @@ int main(void) { @autoreleasepool {
     expect([EBEstimateCharge(i, @[]).state isEqual:@"target-reached"], "direct target reached");
     i.socEstimated = YES;
     expect([EBEstimateCharge(i, @[]).state isEqual:@"near-target"], "inferred clamp never claims confirmed completion");
+    for (NSNumber *target in @[@90, @100]) for (NSNumber *estimated in @[@NO, @YES]) {
+        i.targetPercent = target.doubleValue; i.socEstimated = estimated.boolValue;
+        i.soc = i.targetPercent - .01;
+        r = EBEstimateCharge(i, @[]);
+        expect(r.available && [r.label isEqual:@"<5m"], "active duration remains visible immediately below target");
+        i.soc = i.targetPercent;
+        r = EBEstimateCharge(i, @[]);
+        expect(!r.available && r.label.length == 0, "direct and inferred completion have no ETA label at either target");
+        expect([r.detail containsString:@"reached"], "completion remains explained in Details");
+        expect([r.state isEqual:estimated.boolValue ? @"near-target" : @"target-reached"],
+               "hiding label preserves confirmation provenance for forecasts");
+        i.state = EBChargerStateWaiting;
+        expect(EBEstimateCharge(i, @[]).label.length == 0, "completed waiting state leaves no label");
+        i.state = EBChargerStateSolar;
+    }
+    i.targetPercent = 90;
     i.soc = 50; i.socEstimated = NO;
     i.state = EBChargerStateWaiting;
     expect(!EBEstimateCharge(i, @[]).available, "paused status rejects lingering positive meter power");

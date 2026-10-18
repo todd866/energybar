@@ -143,6 +143,7 @@ EBConfig *EBLoadConfig(void) {
     config.orgId = EBConfigString(file, @"EVNEX_ORG_ID");
     config.tokenCachePath = [EBHome() stringByAppendingPathComponent:@".cache/evnex/tokens.json"];
     config.samplesPath = [EBHome() stringByAppendingPathComponent:@".cache/energybar/samples.jsonl"];
+    config.statisticsPath = [EBHome() stringByAppendingPathComponent:@".local/state/energybar/statistics.json"];
     config.sessionsPath = [EBHome() stringByAppendingPathComponent:@".cache/energybar/sessions.json"];
     config.froniusArchivePath = [EBHome() stringByAppendingPathComponent:@".cache/energybar/fronius-pv.json"];
     NSString *tariffPath = EBConfigString(file, @"ENERGYBAR_TARIFF_PATH");

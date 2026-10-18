@@ -21,9 +21,10 @@ about the car's cap. No 80% laptop rule is applied. No second full-charge promis
 is shown when a lower target is configured.
 
 Durations round up to 5 minutes below an hour and 0.1 hours thereafter; under
-5 minutes stays `<5m`, never `0m` or prematurely complete. Direct SoC at the
-target shows a check; a clamped inferred SoC says approximately full/target and
-awaits vehicle confirmation. Paused, disconnected, fault and missing/stale data
+5 minutes stays `<5m`, never `0m` or prematurely complete. At or above the target,
+the duration label and target marker disappear. Details retains confirmed
+completion or the inferred estimate awaiting vehicle confirmation. Paused,
+disconnected, fault and missing/stale data
 have no numeric ETA. Details and the accessibility label give the reason.
 
 Freshness is evaluated each time the view is presented: status ≤150 seconds,
