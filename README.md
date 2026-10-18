@@ -160,7 +160,7 @@ pixel diffs are a same-macOS local gate; CI runs cross-version semantic/layout
 visual checks, sanitizer suites, arm64 architecture checks, and a native bundle
 smoke test.
 
-The JSON dump schema is version 8. `chargingEstimate` exposes the current-rate projection and its availability reason; see [charging estimates](docs/charging-estimates.md). `gridCosts` exposes separate priced import
+The JSON dump schema is version 10. `chargingEstimate` exposes the current-rate projection and its availability reason; see [charging estimates](docs/charging-estimates.md). `forecast.learning` exposes coverage, learned baselines, session summaries and prospective error scores; see [adaptive forecasting](docs/adaptive-forecasting.md). `gridCosts` exposes separate priced import
 and export energy, cost and credit, currency, coverage, active rates and live
 hourly amounts; unavailable costs are null. Fronius output names recovered window energy
 as a lower bound and exposes interval/device coverage; Evnex output distinguishes
