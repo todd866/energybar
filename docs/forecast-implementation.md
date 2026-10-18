@@ -10,8 +10,10 @@ The 400-point popover keeps three instrument rows, its existing chart and footer
 The default Today view runs from local midnight to midnight, including the
 remaining daylight and 23/25-hour daylight-saving days. The 48-hour view uses
 36 past and 12 future. The interval containing Now is split exactly at the
-observation time, so solid measured bars never extend into the future. Solid bars are observations; outlined bars are
-projections. Selecting an interval gives the assumptions and source ages.
+observation time, so solid measured bars never extend into the future. Solid bars are observations; softer fills after the Now divider are
+projections. A quiet future tint and separated region label preserve the distinction
+without textured backgrounds. Missing values stay gaps and remain unavailable in
+interval details and accessibility text. Selecting an interval gives the assumptions and source ages.
 Solar, home and car have independent availability and expiry clocks. A signed-out
 vehicle or missing SoC suppresses only its charging scenario and the grid balance
 that depends on it. It cannot suppress calibrated solar or the measured household
@@ -19,10 +21,10 @@ baseline. A fresh paused/unplugged status supports a conditional zero car load
 without battery telemetry. Unknown active charging never becomes zero.
 
 When a complete balance is unavailable, the chart retains the future window and
-draws any known solar generation as orange outlines over the hatched unknown
-allocations. Interval details show independently known home/car values; missing
+draws any known solar generation as softly filled orange bars. Unknown
+allocations remain gaps. Interval details show independently known home/car values; missing
 car, import and export are marked unavailable. If all inputs are missing, the
-future region remains hatched after Now instead of reverting to a history-only
+future region remains empty and subtly tinted after Now instead of reverting to a history-only
 chart. Today always includes the rest of the local day; 48 hours adds the longer
 history and a twelve-hour outlook. No control is scheduled.
 

@@ -208,8 +208,8 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
     NSRect b = self.bounds;
     // Gutter fits a single "10.5 kW" label. The time axis keeps the bottom 16pt.
     CGFloat axisH = 16, gutter = 52;
-    // Half a label above the plot lets the top value sit on its actual gridline.
-    return NSMakeRect(b.origin.x + gutter, b.origin.y + axisH, b.size.width - gutter, b.size.height - axisH - 8);
+    // Reserve breathing room for the Now divider and the forecast-region label.
+    return NSMakeRect(b.origin.x + gutter, b.origin.y + axisH, b.size.width - gutter, b.size.height - axisH - 18);
 }
 
 - (void)rebuild {
@@ -281,9 +281,9 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
     BOOL anyKnown = NO;
     for (NSInteger i = 0; i < _nBars; i++) anyKnown = anyKnown || _bars[i].known;
     self.accessibilityLabel = anyKnown
-        ? [NSString stringWithFormat:@"%.0f-hour power %@. Solar above zero, grid import below zero. Shared scale: %.1f kW solar to minus %.1f kW import. Hatched areas have no data. %@",
+        ? [NSString stringWithFormat:@"%.0f-hour power %@. Solar above zero, grid import below zero. Shared scale: %.1f kW solar to minus %.1f kW import. Gaps have no data. %@",
            duration / 3600, [self hasForecast] ? @"history and forecast" : @"history", _upMax / 1000, _downMax / 1000,
-           [self hasForecast] ? @"Solid bars are measured; outlined bars are forecasts. Partial forecasts show solar only; home and any known car load are in interval details." : @""]
+           [self hasForecast] ? @"Solid bars are measured; softly filled bars after Now are forecasts. Partial forecasts show solar only; home and any known car load are in interval details." : @""]
         : ([self hasForecast] ? @"No power data. Forecast inputs unavailable; the future window remains after Now." : @"No power history yet");
     self.needsDisplay = YES;
 }
@@ -357,14 +357,16 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
     NSDictionary *lab = EBChartLabelAttrs();
     NSRect plot = _plot;
     __block NSColor *carSolar = nil, *carGrid = nil, *exportCol = nil, *home = nil;
-    __block NSColor *solarInk = nil, *importInk = nil, *homeImport = nil;
+    __block NSColor *solarInk = nil, *solarColor = nil, *importInk = nil, *homeImport = nil;
+    __block CGFloat forecastOpacity = 0.42;
     [self.effectiveAppearance performAsCurrentDrawingAppearance:^{
+        forecastOpacity = EBAppearanceIsDark() ? 0.60 : 0.42;
         carSolar = EBColorCarOnSolar();
         carGrid = EBColorCarOnGrid();
         homeImport = [carGrid colorWithAlphaComponent:0.45];
         exportCol = EBColorExport();
         home = EBColorHome();
-        solarInk = EBInkSurplus();
+        solarInk = EBInkSurplus(); solarColor = EBColorSurplus();
         importInk = EBInkCarOnGrid();
     }];
     BOOL any = NO;
@@ -373,22 +375,36 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
     double total = _upMax + _downMax;
     CGFloat (^h)(double) = ^CGFloat(double w) { return (CGFloat)(w / total) * plot.size.height; };
 
-    // Recessive gridlines at round kW steps on the shared scale.
-    double step = _step;
-    // Recessive: NSRectFill copies and would drop the alpha, so composite over.
-    [[NSColor.labelColor colorWithAlphaComponent:0.10] setFill];
-    if (any) {
-        NSRectFillUsingOperation(NSMakeRect(plot.origin.x, NSMaxY(plot) - 0.5, plot.size.width, 0.5),
-                                 NSCompositingOperationSourceOver);
-        NSRectFillUsingOperation(NSMakeRect(plot.origin.x, NSMinY(plot), plot.size.width, 0.5),
+    CGFloat nowX = plot.origin.x + [[self observationDate] timeIntervalSinceDate:[self displayStart]]
+        / [self displayDuration] * plot.size.width;
+    nowX = fmax(NSMinX(plot), fmin(NSMaxX(plot), nowX));
+    if ([self hasForecast]) {
+        // One quiet field identifies future time without striping missing components.
+        [[NSColor.labelColor colorWithAlphaComponent:0.025] setFill];
+        NSRectFillUsingOperation(NSMakeRect(nowX, NSMinY(plot), NSMaxX(plot)-nowX, NSHeight(plot)),
                                  NSCompositingOperationSourceOver);
     }
+    // At most two interior guides in either direction; the data carries the detail.
+    double step = _step * fmax(1, ceil(fmax(_upMax, _downMax) / (_step * 3)));
+    [[NSColor.labelColor colorWithAlphaComponent:0.055] setFill];
+    if (any) {
+        NSRectFillUsingOperation(NSMakeRect(plot.origin.x, NSMaxY(plot)-0.5, plot.size.width, 0.5), NSCompositingOperationSourceOver);
+        NSRectFillUsingOperation(NSMakeRect(plot.origin.x, NSMinY(plot), plot.size.width, 0.5), NSCompositingOperationSourceOver);
+    }
     for (double kw = step; any && kw < _upMax; kw += step)
-        NSRectFillUsingOperation(NSMakeRect(plot.origin.x, _zeroY + h(kw), plot.size.width, 1),
-                                 NSCompositingOperationSourceOver);
+        NSRectFillUsingOperation(NSMakeRect(plot.origin.x, _zeroY+h(kw), plot.size.width, 0.5), NSCompositingOperationSourceOver);
     for (double kw = step; any && kw < _downMax; kw += step)
-        NSRectFillUsingOperation(NSMakeRect(plot.origin.x, _zeroY - h(kw), plot.size.width, 1),
-                                 NSCompositingOperationSourceOver);
+        NSRectFillUsingOperation(NSMakeRect(plot.origin.x, _zeroY-h(kw), plot.size.width, 0.5), NSCompositingOperationSourceOver);
+
+    void (^projectedBar)(NSRect, NSColor *, BOOL) = ^(NSRect rect, NSColor *color, BOOL upwards) {
+        [[color colorWithAlphaComponent:color.alphaComponent * forecastOpacity] setFill];
+        NSRectFillUsingOperation(rect, NSCompositingOperationSourceOver);
+        // A small cap keeps forecast magnitude legible without boxing every bar.
+        [[color colorWithAlphaComponent:color.alphaComponent * 0.75] setFill];
+        CGFloat capHeight = fmin(0.75, NSHeight(rect));
+        CGFloat capY = upwards ? NSMaxY(rect)-capHeight : NSMinY(rect);
+        NSRectFillUsingOperation(NSMakeRect(NSMinX(rect), capY, NSWidth(rect), capHeight), NSCompositingOperationSourceOver);
+    };
 
     NSDate *displayStart = [self displayStart];
     NSTimeInterval duration = [self displayDuration];
@@ -403,31 +419,15 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
         CGFloat x = plot.origin.x + [_barEdges[i] timeIntervalSinceDate:displayStart] / duration * plot.size.width;
         if (!b.known) {
             if (!any && ![self hasForecast]) continue;
-            NSRect band = NSMakeRect(x, plot.origin.y, barW, plot.size.height);
-            [[NSColor.labelColor colorWithAlphaComponent:0.05] setFill];
-            NSRectFillUsingOperation(band, NSCompositingOperationSourceOver);
-            [NSGraphicsContext saveGraphicsState];
-            [[NSBezierPath bezierPathWithRect:band] addClip];
-            NSBezierPath *hatch = [NSBezierPath bezierPath];
-            hatch.lineWidth = 1;
-            [[NSColor.labelColor colorWithAlphaComponent:0.16] setStroke];
-            for (CGFloat d = -band.size.height; d < band.size.width + band.size.height; d += 5) {
-                [hatch moveToPoint:NSMakePoint(NSMinX(band) + d, NSMinY(band))];
-                [hatch lineToPoint:NSMakePoint(NSMinX(band) + d + band.size.height, NSMaxY(band))];
+            // Missing history stays a faint gap. Future unknowns use the shared field,
+            // never zero-height values or a fabricated balanced allocation.
+            if (!forecast) {
+                [[NSColor.labelColor colorWithAlphaComponent:0.025] setFill];
+                NSRectFillUsingOperation(NSMakeRect(x, plot.origin.y, slot, plot.size.height), NSCompositingOperationSourceOver);
             }
-            [hatch stroke];
-            [NSGraphicsContext restoreGraphicsState];
-            // Without a full balance, only independently known generation is drawn.
-            // The hatching retains unknown allocations; car/grid never silently become zero.
             if (partial && _bars[i].known && b.solar >= 0 && !_solarSuppressed) {
                 NSRect solarRect = NSMakeRect(x, _zeroY + 0.5, barW, h(b.solar));
-                [[NSColor.systemOrangeColor colorWithAlphaComponent:0.12] setFill];
-                NSRectFillUsingOperation(solarRect, NSCompositingOperationSourceOver);
-                if (solarRect.size.height >= 0.7) {
-                    [solarInk setStroke];
-                    NSBezierPath *outline = [NSBezierPath bezierPathWithRect:NSInsetRect(solarRect, 0.35, 0.35)];
-                    outline.lineWidth = 0.7; [outline stroke];
-                }
+                projectedBar(solarRect, solarColor, YES);
             }
             continue;
         }
@@ -439,13 +439,8 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
             CGFloat hh = h(w);
             if (hh < 0.5) continue;
             NSRect rect = NSMakeRect(x, y, barW, hh);
-            if (forecast) {
-                [[c colorWithAlphaComponent:0.16] setFill];
-                NSRectFillUsingOperation(rect, NSCompositingOperationSourceOver);
-                [[c colorWithAlphaComponent:0.68] setStroke];
-                NSBezierPath *outline = [NSBezierPath bezierPathWithRect:NSInsetRect(rect, 0.35, 0.35)];
-                outline.lineWidth = 0.7; [outline stroke];
-            } else { [c setFill]; NSRectFill(rect); }
+            if (forecast) projectedBar(rect, c, YES);
+            else { [c setFill]; NSRectFill(rect); }
             y += hh;
         }
         // Down: everything here is grid import, so it is red (shared spec). The car's share is
@@ -457,20 +452,18 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
             if (hh < 0.5) continue;
             NSColor *color = k == 0 ? carGrid : homeImport;
             NSRect rect = NSMakeRect(x, y - hh, barW, hh);
-            [[color colorWithAlphaComponent:forecast ? 0.16 : color.alphaComponent] setFill];
-            NSRectFillUsingOperation(rect, NSCompositingOperationSourceOver);
-            if (forecast) {
-                [[color colorWithAlphaComponent:0.68] setStroke];
-                NSBezierPath *outline = [NSBezierPath bezierPathWithRect:NSInsetRect(rect, 0.35, 0.35)];
-                outline.lineWidth = 0.7; [outline stroke];
+            if (forecast) projectedBar(rect, color, NO);
+            else {
+                [color setFill];
+                NSRectFillUsingOperation(rect, NSCompositingOperationSourceOver);
             }
             y -= hh;
         }
     }
 
     if (any) {
-        [NSColor.labelColor setFill];
-        NSRectFill(NSMakeRect(plot.origin.x, _zeroY - 0.5, plot.size.width, 1));
+        [[NSColor.labelColor colorWithAlphaComponent:0.40] setFill];
+        NSRectFillUsingOperation(NSMakeRect(plot.origin.x, _zeroY-0.375, plot.size.width, 0.75), NSCompositingOperationSourceOver);
     }
 
     // The gutter names both halves. Signed, rounded limits and an explicit zero
@@ -522,8 +515,8 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
             NSSize sz = [t sizeWithAttributes:lab];
             CGFloat tx = MIN(NSMaxX(plot) - sz.width, MAX(plot.origin.x, x - sz.width / 2));
             [t drawAtPoint:NSMakePoint(tx, self.bounds.origin.y) withAttributes:lab];
-            [[NSColor.labelColor colorWithAlphaComponent:0.10] setFill];
-            NSRectFillUsingOperation(NSMakeRect(x, plot.origin.y, 1, plot.size.height),
+            [[NSColor.labelColor colorWithAlphaComponent:0.035] setFill];
+            NSRectFillUsingOperation(NSMakeRect(x, plot.origin.y, 0.5, plot.size.height),
                                      NSCompositingOperationSourceOver);
         }
         if (self.windowSeconds <= 24*3600) {
@@ -537,22 +530,22 @@ EBChartScale EBChartMakeScale(double solarPeakW, double importPeakW) {
         [endLabel drawAtPoint:NSMakePoint(NSMaxX(plot)-[endLabel sizeWithAttributes:lab].width, self.bounds.origin.y) withAttributes:lab];
     }
     if ([self hasForecast]) {
-        CGFloat nx = plot.origin.x + [[self observationDate] timeIntervalSinceDate:start] / duration * plot.size.width;
+        CGFloat nx = nowX;
         NSBezierPath *boundary = [NSBezierPath bezierPath];
         [boundary moveToPoint:NSMakePoint(nx, plot.origin.y)];
         [boundary lineToPoint:NSMakePoint(nx, NSMaxY(plot))];
-        CGFloat dash[] = {2, 2}; [boundary setLineDash:dash count:2 phase:0];
-        boundary.lineWidth = 0.8; [[NSColor.labelColor colorWithAlphaComponent:0.55] setStroke]; [boundary stroke];
+        CGFloat dash[] = {2, 3}; [boundary setLineDash:dash count:2 phase:0];
+        boundary.lineWidth = 0.75; [[NSColor.labelColor colorWithAlphaComponent:0.45] setStroke]; [boundary stroke];
         NSDictionary *small = @{NSFontAttributeName:[NSFont systemFontOfSize:9 weight:NSFontWeightMedium],
                                 NSForegroundColorAttributeName:EBInkSecondary()};
         NSString *label = @"Now";
         CGFloat nowWidth = [label sizeWithAttributes:small].width;
-        CGFloat labelX = fmax(plot.origin.x, fmin(NSMaxX(plot)-nowWidth, nx-nowWidth-3));
-        [label drawAtPoint:NSMakePoint(labelX, NSMaxY(plot) + 1) withAttributes:small];
+        CGFloat labelX = fmax(plot.origin.x, fmin(NSMaxX(plot)-nowWidth, nx-nowWidth/2));
+        [label drawAtPoint:NSMakePoint(labelX, NSMaxY(plot)+5) withAttributes:small];
         CGFloat forecastWidth = [@"Forecast" sizeWithAttributes:small].width;
-        CGFloat forecastX = fmax(nx+4, labelX+nowWidth+4);
-        if (forecastX+forecastWidth <= NSMaxX(plot))
-            [@"Forecast" drawAtPoint:NSMakePoint(forecastX, NSMaxY(plot) + 1) withAttributes:small];
+        CGFloat forecastX = (nx+NSMaxX(plot)-forecastWidth)/2;
+        if (forecastX >= labelX+nowWidth+12 && forecastX+forecastWidth <= NSMaxX(plot))
+            [@"Forecast" drawAtPoint:NSMakePoint(forecastX, NSMaxY(plot)+5) withAttributes:small];
     }
 
 }

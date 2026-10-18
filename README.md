@@ -8,7 +8,7 @@ vehicle state without treating missing data as zero or an estimate as fact.
 ## What it shows
 
 - live PV (orange; the bar is full at the inverter's capacity, `INVERTER_KW` in `.env`), grid flow (a plain bar; the row's name and colour give the direction), and car charging power. With a known state of charge the Car bar is the pack level with a trend arrow to where it will be in an hour, as on Glancebar's battery. The grid row names the live direction: Import (red) or Export (green). With a tariff configured, its daily energy is paired with estimated cost or credit, such as `6.1 kWh · $1.83`. **⋯ → Details** shows both directions and the live hourly cost; **⋯ → Electricity** has the rates. The aligned value column fits two-digit kW readings;
-- 12-hour and 48-hour history. Solar is above the marked zero, split into car (blue), home (grey) and export (green); grid import is below, in red. Rounded axis limits share one linear scale. A hatched band is a gap in the samples, not a zero. Click a bar for its power breakdown and import total, with calendar dates in the 48-hour view;
+- Today and 48-hour history with a conditional outlook. Solar is above the marked zero, split into car (blue), home (grey) and export (green); grid import is below, in red. Rounded axis limits share one linear scale. Missing samples remain gaps, not zeros. Click a bar for its power breakdown and import total, with calendar dates in the 48-hour view;
 - Solar and Charge now as one mode control (orange for solar, green for charge now). Stop is a separate button and asks before sending a remote stop;
 - day totals with explicit partial-coverage caveats and metered shutdown recovery;
 - **⋯ → Statistics…**: daily and Monday-based weekly recorded energy for solar,
@@ -188,7 +188,7 @@ load excludes the car. The car projection stops at the same unrounded completion
 instant as the ETA, including a partial final bar. Paused/unplugged states project
 no car charging. Solar and home remain available when car telemetry is missing;
 unknown car load leaves dependent grid import/export unavailable. Partial outlooks
-show solar outlines over hatched unknown allocations, with household values in
+show softly filled solar bars with unknown allocations left empty and household values in
 interval details. The Now boundary and future region remain even if all forecast
 inputs are unavailable. Each component expires against its own source clock.
 See [forecast implementation](docs/forecast-implementation.md) and

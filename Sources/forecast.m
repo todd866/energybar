@@ -195,7 +195,7 @@ EBPowerForecast *EBBuildPowerForecast(EBPowerForecastInput *i) {
         r[@"start"]=start; r[@"end"]=end; [rows addObject:r];
     }
     out.rows=rows; out.available=rows.count>0;
-    NSMutableArray *details=[NSMutableArray arrayWithObject:@"Outlined bars are a conditional forecast, not scheduled controls."];
+    NSMutableArray *details=[NSMutableArray arrayWithObject:@"Softly filled bars after Now are a conditional forecast, not scheduled controls."];
     if (solarIssue) [details addObject:[@"Solar unavailable · " stringByAppendingString:solarIssue]];
     else [details addObject:@"Solar uses Open-Meteo hourly radiation calibrated to measured PV, capped at the inverter rating; the broad scenario range is not a confidence interval. Roof angles are unverified."];
     [details addObject:homeIssue ? [@"Home unavailable · " stringByAppendingString:homeIssue]
