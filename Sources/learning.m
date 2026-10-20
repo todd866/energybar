@@ -28,6 +28,38 @@ static NSDictionary *Distribution(NSArray *values) {
     if(!values.count)return @{};
     return @{@"p10":@(Quantile(values,.1)),@"median":@(Quantile(values,.5)),@"p90":@(Quantile(values,.9))};
 }
+static BOOL ValidCharger(NSDictionary *c) {
+    if(!Dict(c)||![@[@"unknown",@"unplugged",@"waiting",@"solar",@"charging",@"fault"] containsObject:c[@"state"] ?: @""]||
+       ![@[@"unavailable",@"idle",@"active-charge",@"target-reached"] containsObject:c[@"scenario"] ?: @""])return NO;
+    for(NSString *key in @[@"statusAt",@"meterAt",@"powerW",@"finishesAt"])
+        if(c[key]&&!Num(c[key]))return NO;
+    if(c[@"powerW"]&&[c[@"powerW"] doubleValue]<0)return NO;
+    NSString *scenario=c[@"scenario"],*state=c[@"state"];
+    if([scenario isEqual:@"idle"])return [@[@"unplugged",@"waiting"] containsObject:state];
+    if([@[@"active-charge",@"target-reached"] containsObject:scenario])
+        return [@[@"solar",@"charging"] containsObject:state];
+    return YES;
+}
+static NSDictionary *ErrorSummaries(NSDictionary *errors) {
+    NSMutableDictionary *scores=[NSMutableDictionary dictionary];
+    for(NSString *key in errors) {
+        NSArray *values=errors[key];double sum=0,absolute=0;
+        for(NSNumber *n in values){sum+=n.doubleValue;absolute+=fabs(n.doubleValue);}
+        if(values.count)scores[key]=@{@"count":@(values.count),@"biasW":@(sum/values.count),@"maeW":@(absolute/values.count)};
+    }
+    return scores;
+}
+static NSString *ChargeErrorScenario(NSDictionary *v) {
+    NSDictionary *c=v[@"charger"];
+    // Old vintages remain useful overall, but their issuance state cannot be
+    // reconstructed from a zero prediction or today's charger status.
+    if(!ValidCharger(c))return @"unclassified";
+    NSString *scenario=c[@"scenario"];
+    if([scenario isEqual:@"idle"]&&[v[@"prediction"][@"chargeW"] doubleValue]==0)
+        return [v[@"outcome"][@"chargeW"][@"meanW"] doubleValue]>0 ? @"idle-load-observed" : @"idle-no-load";
+    if([@[@"active-charge",@"target-reached"] containsObject:scenario])return scenario;
+    return @"unclassified";
+}
 static BOOL Valid(NSDictionary *d,NSString *source) {
     if(!Dict(d)||![d[@"schema"] isEqual:@1]||![d[@"modelVersion"] isEqual:@1]||![d[@"source"] isEqual:source])return NO;
     NSArray *keys=@[@"pv",@"sessions",@"vintages"],*limits=@[@(PVLimit),@(SessionLimit),@(VintageLimit)];
@@ -48,6 +80,7 @@ static BOOL Valid(NSDictionary *d,NSString *source) {
            [v[@"issuedAt"] doubleValue]>=[v[@"start"] doubleValue]||
            fabs([v[@"end"] doubleValue]-[v[@"start"] doubleValue]-3600)>.01||
            [starts containsObject:v[@"start"]]||!Dict(v[@"prediction"])||!Dict(v[@"outcome"]))return NO;
+        if(v[@"charger"]&&!ValidCharger(v[@"charger"]))return NO;
         [starts addObject:v[@"start"]];
         for(NSString *key in v[@"prediction"])if(!Num(v[@"prediction"][key]))return NO;
         for(NSString *key in v[@"outcome"]) {
@@ -200,7 +233,7 @@ NSDictionary *EBLearningModel(NSDictionary *statistics,NSDictionary *ledger,NSDa
         if(values.count<5||t-latest>14*86400)continue;
         NSMutableDictionary *b=[Distribution(values) mutableCopy];b[@"days"]=@(values.count);b[@"coverageSeconds"]=@(coverage);b[@"latest"]=@(latest);buckets[key]=b;
     }
-    NSMutableArray *ratios=[NSMutableArray array];NSMutableSet *solarDays=[NSMutableSet set];NSMutableDictionary *errors=[NSMutableDictionary dictionary];
+    NSMutableArray *ratios=[NSMutableArray array];NSMutableSet *solarDays=[NSMutableSet set];NSMutableDictionary *errors=[NSMutableDictionary dictionary],*chargeErrors=[NSMutableDictionary dictionary];
     NSUInteger scored=0;
     for(NSDictionary *v in ledger[@"vintages"]) {
         if([v[@"end"] doubleValue]>t||[v[@"end"] doubleValue]<t-Training||[v[@"issuedAt"] doubleValue]>=[v[@"start"] doubleValue])continue;
@@ -210,6 +243,11 @@ NSDictionary *EBLearningModel(NSDictionary *statistics,NSDictionary *ledger,NSDa
             if(!o||!Num(prediction)||[o[@"observedAt"] doubleValue]>t)continue;
             double error=[prediction doubleValue]-[o[@"meanW"] doubleValue];
             if(!errors[key])errors[key]=[NSMutableArray array];[errors[key] addObject:@(error)];any=YES;
+            if([key isEqual:@"chargeW"]) {
+                NSString *scenario=ChargeErrorScenario(v);
+                if(!chargeErrors[scenario])chargeErrors[scenario]=[NSMutableArray array];
+                [chargeErrors[scenario] addObject:@(error)];
+            }
         }
         if(any)scored++;
         NSDictionary *solar=v[@"outcome"][@"pvW"];double base=[v[@"prediction"][@"basePvW"] doubleValue];
@@ -221,8 +259,7 @@ NSDictionary *EBLearningModel(NSDictionary *statistics,NSDictionary *ledger,NSDa
     BOOL calibrated=ratios.count>=12&&solarDays.count>=3;
     NSMutableDictionary *calibration=[@{@"available":@(calibrated),@"scoredDaylightHours":@(ratios.count),@"days":@(solarDays.count)} mutableCopy];
     if(calibrated){calibration[@"factor"]=@(fmin(1.5,fmax(.5,Quantile(ratios,.5))));calibration[@"lowFactor"]=@(fmax(0,Quantile(ratios,.1)));calibration[@"highFactor"]=@(fmin(2.5,Quantile(ratios,.9)));}
-    NSMutableDictionary *scores=[NSMutableDictionary dictionary];
-    for(NSString *key in errors){double sum=0,abs=0;for(NSNumber *n in errors[key]){sum+=n.doubleValue;abs+=fabs(n.doubleValue);}scores[key]=@{@"count":@([errors[key] count]),@"biasW":@(sum/[errors[key] count]),@"maeW":@(abs/[errors[key] count])};}
+    NSDictionary *scores=ErrorSummaries(errors);
     NSMutableArray *energy=[NSMutableArray array],*duration=[NSMutableArray array];NSMutableSet *sessionDays=[NSMutableSet set];NSMutableDictionary *startHours=[NSMutableDictionary dictionary];
     for(NSDictionary *r in ledger[@"sessions"]) {
         double end=[r[@"end"] doubleValue];if(end>t||end<t-Retention)continue;
@@ -234,6 +271,7 @@ NSDictionary *EBLearningModel(NSDictionary *statistics,NSDictionary *ledger,NSDa
     if(sessionsReady){sessionSummary[@"energyWh"]=Distribution(energy);sessionSummary[@"elapsedSeconds"]=Distribution(duration);sessionSummary[@"startHours"]=startHours;}
     return @{@"modelVersion":@1,@"asOf":@(t),@"timeZone":zone.name,@"trainingDays":@28,@"homeMinimumDays":@5,@"homeCoveredHours":@(coveredHours),@"homeBuckets":buckets,
         @"solarCalibration":calibration,@"sessions":sessionSummary,@"savedVintages":@([ledger[@"vintages"] count]),@"scoredVintages":@(scored),@"errors":scores,
+        @"chargeErrorsByScenario":ErrorSummaries(chargeErrors),
         @"rangeMeaning":@"observed p10–p90 spread; conditional scenarios, not a confidence interval or a battery-state measurement"};
 }
 NSDictionary *EBLearningRecord(NSDictionary *ledger,NSDictionary *statistics,EBPowerForecast *forecast,NSDictionary *context,NSDate *now) {
@@ -260,7 +298,14 @@ NSDictionary *EBLearningRecord(NSDictionary *ledger,NSDictionary *statistics,EBP
             NSMutableDictionary *vehicle=[NSMutableDictionary dictionary];
             for(NSString *key in @[@"socSource",@"socEstimated",@"socAvailable",@"targetKnown",@"etaAvailable"])
                 if([context[key] isKindOfClass:NSString.class]||[context[key] isKindOfClass:NSNumber.class])vehicle[key]=context[key];
-            [vintages addObject:@{@"issuedAt":@(t),@"start":@(start),@"end":@(start+3600),@"modelVersion":@1,@"prediction":prediction,@"vehicle":vehicle,@"outcome":@{}}];
+            NSMutableDictionary *v=[@{@"issuedAt":@(t),@"start":@(start),@"end":@(start+3600),@"modelVersion":@1,@"prediction":prediction,@"vehicle":vehicle,@"outcome":@{}} mutableCopy];
+            if(ValidCharger(forecast.chargerContext)) {
+                NSMutableDictionary *charger=[NSMutableDictionary dictionary];
+                for(NSString *key in @[@"state",@"scenario",@"statusAt",@"meterAt",@"powerW",@"finishesAt"])
+                    if(forecast.chargerContext[key])charger[key]=forecast.chargerContext[key];
+                v[@"charger"]=[charger copy];
+            }
+            [vintages addObject:v];
         }
     }
     NSMutableDictionary *result=[ledger mutableCopy];result[@"vintages"]=Bound(vintages,@"start",VintageLimit);return result;

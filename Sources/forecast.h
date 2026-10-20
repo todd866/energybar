@@ -23,6 +23,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property BOOL available;
 @property(copy, nullable) NSDictionary *learning;
 @property(copy, nullable) NSString *learningError;
+/// Exact charger assumptions used by this forecast, for prospective scoring.
+/// Local timestamps/power only; no account, vehicle or session identifiers.
+@property(copy, nullable) NSDictionary *chargerContext;
 @end
 /// No I/O. Hourly radiation means cover the preceding hour; no future data becomes actual.
 EBPowerForecast *EBBuildPowerForecast(EBPowerForecastInput *input);

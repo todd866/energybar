@@ -24,6 +24,11 @@ int main(void) { @autoreleasepool {
     EBPowerForecastInput *i=Input(); EBPowerForecast *f=EBBuildPowerForecast(i);
     Expect(f.available && f.solarAvailable && f.homeAvailable && f.carAvailable && f.gridAvailable,"valid measured data must produce all forecast components");
     Expect(fabs([f.carFinishesAt timeIntervalSinceDate:i.now]-9120)<.001,"completion must use unrounded ETA, not hardcoded hours");
+    Expect([f.chargerContext[@"state"] isEqual:@"solar"]&&[f.chargerContext[@"scenario"] isEqual:@"active-charge"]&&
+           [f.chargerContext[@"powerW"] intValue]==3500&&
+           [f.chargerContext[@"statusAt"] doubleValue]==i.now.timeIntervalSince1970&&
+           [f.chargerContext[@"finishesAt"] doubleValue]==f.carFinishesAt.timeIntervalSince1970,
+           "issuance context retains the actual solar charging assumptions and source clock");
     NSDictionary *before=EBForecastAverage(f.rows,At(i.now,0),At(i.now,900));
     Expect(fabs([before[@"chargeW"] doubleValue]-3500)<.001,"before finish current charger AC rate");
     Expect(fabs([before[@"homeW"] doubleValue]-1000)<.001,"household baseline must exclude charger load");
@@ -42,18 +47,25 @@ int main(void) { @autoreleasepool {
     Expect(fabs(energy-3500*9120/3600.0)<.001,"AC energy stops exactly at target with efficiency applied once");
     i.chargeEstimate.seconds=30; f=EBBuildPowerForecast(i);
     Expect(fabs([EBForecastAverage(f.rows,i.now,At(i.now,900))[@"chargeW"] doubleValue]-3500/30.0)<.001,"near target first interval fraction");
+    Expect([EBForecastAverage(f.rows,At(i.now,3600),At(i.now,7200))[@"chargeW"] doubleValue]==0&&
+           [f.chargerContext[@"scenario"] isEqual:@"active-charge"],"near-target zero future load is still an active-charge scenario");
     i.chargeEstimate.seconds=3600;i.chargerW=1750; f=EBBuildPowerForecast(i);
     Expect([EBForecastAverage(f.rows,i.now,At(i.now,900))[@"chargeW"] doubleValue]==1750,"rate changes rebuild from latest estimate");
     i.chargerState=EBChargerStateWaiting;f=EBBuildPowerForecast(i);
     Expect(f.available && [EBForecastAverage(f.rows,i.now,At(i.now,900))[@"chargeW"] doubleValue]==0,"paused scenario does not project charging");
+    Expect([f.chargerContext[@"scenario"] isEqual:@"idle"]&&[f.chargerContext[@"state"] isEqual:@"waiting"]&&!f.chargerContext[@"finishesAt"],
+           "waiting context cannot inherit a previous charging finish");
     i.chargerState=EBChargerStateUnplugged;f=EBBuildPowerForecast(i);
     Expect(f.available && !f.carFinishesAt,"unplugged has no invented finish");
+    Expect([f.chargerContext[@"scenario"] isEqual:@"idle"]&&[f.chargerContext[@"state"] isEqual:@"unplugged"],"unplugged state retained distinctly from waiting");
     i=Input();i.chargerStatusAt=At(i.now,-151);f=EBBuildPowerForecast(i);
     Expect(f.solarAvailable && f.homeAvailable && !f.carAvailable && !f.gridAvailable,"stale car status must retain solar and home");
+    Expect([f.chargerContext[@"scenario"] isEqual:@"unavailable"]&&!f.chargerContext[@"finishesAt"],"stale status is never classified as active or idle");
     i=Input();i.chargeEstimate.available=NO;i.chargeEstimate.state=@"near-target";f=EBBuildPowerForecast(i);
     Expect(f.solarAvailable && f.homeAvailable && !f.carAvailable,"inferred full keeps solar/home while awaiting car confirmation");
     i=Input();i.chargeEstimate.available=NO;i.chargeEstimate.state=@"target-reached";f=EBBuildPowerForecast(i);
     Expect(f.available && f.gridAvailable && !f.carFinishesAt,"confirmed target has no projected charging load");
+    Expect([f.chargerContext[@"scenario"] isEqual:@"target-reached"],"confirmed target remains distinct from idle and active charging");
     i=Input();i.chargeEstimate.available=NO;i.chargeEstimate.state=@"battery-unavailable";i.chargeEstimate.detail=@"vehicle cloud: signed out";f=EBBuildPowerForecast(i);
     NSDictionary *partial=EBForecastAverage(f.rows,i.now,At(i.now,900));
     Expect(f.solarAvailable && f.homeAvailable && !f.carAvailable && !f.gridAvailable,"signed-out vehicle cannot hide independent solar and home");
@@ -77,6 +89,8 @@ int main(void) { @autoreleasepool {
     Expect(f.solarAvailable && !f.homeAvailable && !f.gridAvailable,"startup missing home must retain independently calibrated solar");
     i=[EBPowerForecastInput new];f=EBBuildPowerForecast(i);
     Expect(!f.available && f.rows.count==0 && f.asOf && !f.carFinishesAt,"all data unavailable retains the forecast boundary without invented rows");
+    Expect([f.chargerContext[@"scenario"] isEqual:@"unavailable"]&&!f.chargerContext[@"powerW"]&&!f.chargerContext[@"statusAt"],
+           "startup context cannot invent a zero power measurement or source clock");
     i=Input();i.weather=@{@"fetchedAt":i.now,@"response":@[]};f=EBBuildPowerForecast(i);
     Expect(!f.solarAvailable && f.homeAvailable,"malformed weather must fail closed without blocking home");
     NSArray *mixed=@[@{@"start":i.now,@"end":At(i.now,450),@"pvW":@1000,@"chargeW":@0},

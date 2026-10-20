@@ -69,6 +69,23 @@ Import/export outcomes integrate both directions separately even within a
 zero-crossing interval. Scores evaluate these next-hour vintages, not all-day
 accuracy. The first installation has no scored forecasts.
 
+New vintages also freeze the charger state, selected scenario, available source
+timestamps and AC power, and the projected finish time when present. This context
+comes from the same forecast calculation as the prediction. It never stores
+account, vehicle or session identifiers. Recalculation cannot replace it.
+
+`forecast.learning.chargeErrorsByScenario` supplements the unchanged overall
+charger scores with `idle-load-observed`, `idle-no-load`, `active-charge`,
+`target-reached` and `unclassified` groups (only groups with scores appear).
+Charging observed after an idle forecast can reflect a start or resume; it does
+not establish an erroneous completion estimate. Conversely, an active charge
+expected to finish before the target hour stays in `active-charge`, even when its
+predicted hourly load is zero. These remain power-error scores, not direct ETA
+accuracy measurements: rate changes, pauses and later sessions can also contribute.
+Existing schema-1 vintages without charger context remain readable and
+`unclassified`; their context is never reconstructed from present state. The
+coverage, closeout, retention and training thresholds are unchanged.
+
 The deterministic walk-forward test trains only on earlier data, freezes a
 prediction, adds later observations, then scores it. Future samples and future
 scoring timestamps cannot enter an earlier model. This demonstrates mechanics on

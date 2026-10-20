@@ -68,6 +68,49 @@ int main(void){@autoreleasepool{
     NSDictionary *missing=EBLearningRecord(v,@{},[EBPowerForecast new],@{},At(now));
     Check([missing[@"vintages"][0][@"outcome"] count]==0,"missing measurements cannot score as zero");
 
+    // Context is captured prospectively. A later charging start/resume must not
+    // be mixed with power errors from an already-active completion scenario.
+    NSDictionary *chargeLedger=Observe(nil,@[],@[],day);
+    NSArray *states=@[@"unplugged",@"waiting",@"charging",@"solar",@"charging",@"unknown"];
+    NSArray *scenarios=@[@"idle",@"idle",@"active-charge",@"active-charge",@"target-reached",@"legacy"];
+    NSArray *predictions=@[@0,@0,@0,@2000,@0,@0],*actuals=@[@3000,@0,@1000,@2500,@700,@500];
+    for(NSUInteger n=0;n<states.count;n++) {
+        double target=start+n*7200,issued=target-1800;
+        EBPowerForecast *f=[EBPowerForecast new];f.asOf=At(issued);
+        f.rows=@[@{@"start":At(target),@"end":At(target+3600),@"chargeW":predictions[n]}];
+        if(n<5) {
+            NSMutableDictionary *context=[@{@"state":states[n],@"scenario":scenarios[n],@"statusAt":@(issued),
+                @"meterAt":@(issued-30),@"powerW":@3500,@"sessionID":@"must-not-be-retained"} mutableCopy];
+            if([scenarios[n] isEqual:@"active-charge"])context[@"finishesAt"]=@(n==2?target-60:target+1800);
+            f.chargerContext=context;
+        }
+        chargeLedger=EBLearningRecord(chargeLedger,@{},f,@{},At(issued));
+        NSDictionary *original=[chargeLedger[@"vintages"] lastObject];
+        Check(n==5?!original[@"charger"]:[original[@"charger"][@"state"] isEqual:states[n]],"legacy absent context and new issuance state preserved");
+        Check(!original[@"charger"][@"sessionID"],"charger context only retains approved diagnostic fields");
+        f.chargerContext=@{@"state":@"waiting",@"scenario":@"idle"};
+        NSDictionary *retried=EBLearningRecord(chargeLedger,@{},f,@{},At(issued+60));
+        Check([[retried[@"vintages"] lastObject] isEqual:original],"recomputation cannot replace issuance context, including legacy records");
+        NSMutableArray *measured=[NSMutableArray array];
+        for(int k=0;k<=12;k++)[measured addObject:@{@"t":@(target+k*300),@"chargeW":actuals[n]}];
+        NSDictionary *partialScore=EBLearningRecord(chargeLedger,@{@"meter":[measured subarrayWithRange:NSMakeRange(0,3)]},[EBPowerForecast new],@{},At(target+4200));
+        Check([partialScore[@"vintages"] lastObject][@"outcome"][@"chargeW"]==nil,"context never relaxes measured coverage requirements");
+        chargeLedger=EBLearningRecord(chargeLedger,@{@"meter":measured},[EBPowerForecast new],@{},At(target+4200));
+    }
+    NSDictionary *chargeModel=Model(@{},chargeLedger,start+12*3600),*byScenario=chargeModel[@"chargeErrorsByScenario"];
+    Check([chargeModel[@"errors"][@"chargeW"][@"count"] intValue]==6&&
+          Close([chargeModel[@"errors"][@"chargeW"][@"maeW"] doubleValue],950),"all charger errors remain in the unchanged aggregate");
+    Check([byScenario[@"idle-load-observed"][@"count"] intValue]==1&&
+          Close([byScenario[@"idle-load-observed"][@"biasW"] doubleValue],-3000),"charging after idle is separated from active-charge errors");
+    Check([byScenario[@"idle-no-load"][@"count"] intValue]==1&&
+          Close([byScenario[@"idle-no-load"][@"maeW"] doubleValue],0),"idle with measured zero remains a valid scored outcome");
+    Check([byScenario[@"active-charge"][@"count"] intValue]==2&&
+          Close([byScenario[@"active-charge"][@"maeW"] doubleValue],750),"active charge remains active even when predicted to finish before target hour");
+    Check([byScenario[@"target-reached"][@"count"] intValue]==1&&[byScenario[@"unclassified"][@"count"] intValue]==1,
+          "confirmed target and legacy unknown state have separate score groups");
+    Check([Model(@{},chargeLedger,start)[@"chargeErrorsByScenario"] count]==0,"scenario scores obey the same chronological cutoff");
+    Check([Model(@{},chargeLedger,start+30*86400)[@"chargeErrorsByScenario"] count]==0,"scenario scores expire with the existing training window");
+
     // Repeated walk-forward issuance followed by later measurements. No weather
     // reconstruction: each prediction is already frozen before its target hour.
     NSMutableArray *backtestPV=[NSMutableArray array],*backtestMeter=[NSMutableArray array];
@@ -112,6 +155,14 @@ int main(void){@autoreleasepool{
     NSString *directory=[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString],*path=[directory stringByAppendingPathComponent:@"learning.json"];NSError *error=nil;
     Check(EBLearningSave(path,history,&error),"atomic private save");
     NSDictionary *loaded=EBLearningLoad(path,@"synthetic",&error);Check([loaded isEqual:history],"ledger survives restart");
+    Check(EBLearningSave(path,chargeLedger,&error)&&[EBLearningLoad(path,@"synthetic",&error) isEqual:chargeLedger],
+          "mixed legacy and contextual vintages round-trip without migration or data loss");
+    NSMutableDictionary *invalid=[chargeLedger mutableCopy],*invalidVintage=[chargeLedger[@"vintages"][0] mutableCopy];
+    invalidVintage[@"charger"]=@{@"state":@"unplugged",@"scenario":@"active-charge"};
+    NSMutableArray *invalidVintages=[chargeLedger[@"vintages"] mutableCopy];invalidVintages[0]=invalidVintage;invalid[@"vintages"]=invalidVintages;
+    NSData *validBytes=[NSData dataWithContentsOfFile:path];error=nil;
+    Check(!EBLearningSave(path,invalid,&error)&&error&&[[NSData dataWithContentsOfFile:path] isEqual:validBytes],
+          "invalid charger scenario fails closed and preserves stored history");
     struct stat mode;stat(path.fileSystemRepresentation,&mode);Check((mode.st_mode&0777)==0600,"ledger mode 0600");stat(directory.fileSystemRepresentation,&mode);Check((mode.st_mode&0777)==0700,"directory mode 0700");
     error=nil;Check(!EBLearningLoad(path,@"other-source",&error)&&error,"source mismatch fails closed");
     NSData *before=[NSData dataWithContentsOfFile:path];NSMutableDictionary *wrong=[history mutableCopy];wrong[@"source"]=@"other-source";

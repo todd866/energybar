@@ -15,7 +15,8 @@ NSArray<NSDictionary *> *EBLearningHours(NSDictionary *statistics, NSDictionary 
 /// calibration needs 12 previously issued, scored daylight hours on 3 dates.
 NSDictionary *EBLearningModel(NSDictionary *statistics, NSDictionary *ledger, NSDate *now, NSTimeZone *zone);
 /// Freeze the first next-full-hour vintage; append outcomes only after its end.
-/// Existing predictions/outcomes are immutable. No retrospective weather backfill.
+/// Predictions, charger context and outcomes are immutable. Legacy vintages
+/// without charger context stay unclassified; no retrospective state backfill.
 NSDictionary *EBLearningRecord(NSDictionary *ledger, NSDictionary *statistics,
     EBPowerForecast *forecast, NSDictionary *vehicleContext, NSDate *now);
 NS_ASSUME_NONNULL_END

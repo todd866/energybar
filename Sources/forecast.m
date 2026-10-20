@@ -29,6 +29,16 @@ static BOOL Fresh(NSDate *date, NSDate *now, double age) {
     if (!date) return NO;
     double seconds=[now timeIntervalSinceDate:date]; return seconds>=-60 && seconds<=age;
 }
+static NSString *ChargerStateName(EBChargerState state) {
+    switch (state) {
+        case EBChargerStateUnplugged: return @"unplugged";
+        case EBChargerStateWaiting: return @"waiting";
+        case EBChargerStateSolar: return @"solar";
+        case EBChargerStateCharging: return @"charging";
+        case EBChargerStateFault: return @"fault";
+        default: return @"unknown";
+    }
+}
 double EBForecastCarMeanW(double w, NSDate *now, NSDate *finish, NSDate *start, NSDate *end) {
     double seconds=[end timeIntervalSinceDate:start];
     if (!isfinite(w) || w<0 || !now || !finish || !start || !end || seconds<=0) return 0;
@@ -177,6 +187,18 @@ EBPowerForecast *EBBuildPowerForecast(EBPowerForecastInput *i) {
             if ([meterEnd compare:out.carValidUntil]==NSOrderedAscending) out.carValidUntil=meterEnd;
         }
     }
+    // Preserve the scenario selected above, not an inference from a later
+    // hourly mean (which can be zero after an active charge is due to finish).
+    NSString *scenario=carIssue ? @"unavailable" :
+        !charging ? @"idle" : i.chargeEstimate.available ? @"active-charge" : @"target-reached";
+    NSMutableDictionary *charger=[@{@"state":ChargerStateName(i.chargerState),@"scenario":scenario} mutableCopy];
+    if (i.chargerStatusAt && isfinite(i.chargerStatusAt.timeIntervalSince1970))
+        charger[@"statusAt"]=@(i.chargerStatusAt.timeIntervalSince1970);
+    if (i.chargerMeterAt && isfinite(i.chargerMeterAt.timeIntervalSince1970))
+        charger[@"meterAt"]=@(i.chargerMeterAt.timeIntervalSince1970);
+    if (charger[@"meterAt"] && isfinite(i.chargerW) && i.chargerW>=0) charger[@"powerW"]=@(i.chargerW);
+    if (out.carFinishesAt) charger[@"finishesAt"]=@(out.carFinishesAt.timeIntervalSince1970);
+    out.chargerContext=charger;
     out.gridAvailable=out.solarAvailable && out.homeAvailable && out.carAvailable;
     NSMutableArray *rows=[NSMutableArray array];
     // Keep separate component coverage; an unknown car never becomes a zero load.
