@@ -123,7 +123,7 @@ static NSTextField *EBLabel(NSFont *font, NSRect frame, NSTextAlignment align) {
 
 @implementation EBInstrumentRow {
     NSImageView *_symbol;
-    NSTextField *_nameL, *_valueL, *_datumL, *_targetL;
+    NSTextField *_nameL, *_valueL, *_datumL, *_targetL, *_noteL;
     NSBox *_targetTick;
     EBGauge *_gauge;
     EBTrendArrow *_trend;
@@ -163,6 +163,10 @@ static NSTextField *EBLabel(NSFont *font, NSRect frame, NSTextAlignment align) {
     _targetTick.borderWidth = 0; _targetTick.fillColor = NSColor.secondaryLabelColor;
     _targetTick.hidden = YES;
     [self addSubview:_targetTick]; [self addSubview:_targetL];
+    _noteL = EBLabel([NSFont monospacedDigitSystemFontOfSize:10.5 weight:NSFontWeightMedium],
+                     NSMakeRect(kGaugeX, (EBRowH - 15) / 2, gaugeW, 15), NSTextAlignmentLeft);
+    _noteL.hidden = YES;
+    [self addSubview:_noteL];
     self.accessibilityElement = YES;
     self.accessibilityRole = NSAccessibilityGroupRole;
     return self;
@@ -205,6 +209,12 @@ static NSTextField *EBLabel(NSFont *font, NSRect frame, NSTextAlignment align) {
         _gauge.fraction = MAX(0, self.gaugeFraction);
         _gauge.color = self.gaugeColor ?: self.tint;
     }
+    // An unknown level is never drawn as an empty bar; a needed action is named in its lane.
+    _noteL.hidden = !_gauge.hidden || !self.gaugeNote.length;
+    _noteL.stringValue = self.gaugeNote ?: @"";
+    _noteL.textColor = EBInkStale();
+    _noteL.toolTip = self.gaugeNoteHelp;
+    _noteL.frame = NSMakeRect(kGaugeX, annotation ? 15 : (EBRowH - 15) / 2, gaugeW, 15);
     _trend.hidden = _gauge.hidden || self.gaugeFromCenter || self.trendFrom < 0 || self.trendTo < 0 ||
                     fabs(self.trendTo - self.trendFrom) < 0.01;
     _trend.from = MAX(0, self.trendFrom); _trend.to = MAX(0, self.trendTo);
@@ -234,6 +244,7 @@ static NSTextField *EBLabel(NSFont *font, NSRect frame, NSTextAlignment align) {
     } else {
         if (self.subline.length) [a11y addObject:self.subline];
     }
+    if (!_noteL.hidden) [a11y addObject:self.gaugeNoteHelp ?: self.gaugeNote];
     self.accessibilityLabel = [a11y componentsJoinedByString:@", "];
 }
 @end

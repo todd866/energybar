@@ -873,6 +873,11 @@ int main(int argc, const char *argv[]) {
                 EBApplySnapshot(pv, snap, samp);
                 if ([name isEqual:@"forecast-expired-car"])
                     [pv.chart expireForecastAt:[snap.referenceDate dateByAddingTimeInterval:151]];
+                if ([name isEqual:@"charge-eta-signed-out"])
+                    EBExpect([pv.carRow.gaugeNote isEqual:@"signed out"] && pv.carRow.gaugeFraction < 0,
+                             "a signed-out helper is named in the car lane, never drawn as an empty battery");
+                else if ([name hasPrefix:@"charge-eta-"])
+                    EBExpect(pv.carRow.gaugeNote == nil, "a known battery level carries no helper note");
                 if ([name hasPrefix:@"forecast-"]) {
                     NSInteger current=[pv.chart barIndexForDate:snap.referenceDate];
                     NSString *past=[pv.chart detailsForBar:current-1],*future=[pv.chart detailsForBar:current];

@@ -53,6 +53,8 @@ extern const CGFloat EBPanelW, EBPad, EBRowH, EBValueColumnW, EBDatumColumnW;
 /// Charging duration centered above its target marker, within the same row.
 @property(nonatomic) double targetFraction;
 @property(nonatomic, copy, nullable) NSString *targetLabel, *targetHelp;
+/// Short note drawn in the empty gauge lane when there is no level to show (e.g. "cloud signed out").
+@property(nonatomic, copy, nullable) NSString *gaugeNote, *gaugeNoteHelp;
 @property(nonatomic, readonly) NSRect targetLabelFrame;
 @property(nonatomic, readonly) CGFloat targetMarkerX;
 /// Spoken extras appended to the accessibility label (e.g. "estimated").

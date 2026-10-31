@@ -672,6 +672,12 @@ void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *s, NSArray<NSDictionary 
         car.gaugeFraction = -1;
         car.gaugeColor = nil;
     }
+    // A helper that needs re-linking is an action, not a transient miss: name it in the lane.
+    NSString *issue = s.vehicleTelemetryIssue;
+    BOOL relink = carSOC < 0 && ([issue hasSuffix:@"signed out"] || [issue hasSuffix:@"not linked"]);
+    car.gaugeNote = relink ? ([issue hasSuffix:@"signed out"] ? @"signed out" : @"not linked") : nil;
+    car.gaugeNoteHelp = relink ? @"Battery level unavailable: vehicle cloud signed out; re-link the helper" : nil;
+    if (relink) car.tint = EBInkStale();
     NSString *carEnergy = nil;
     if (s.carDayAvailable) {
         NSString *asOf = s.carDayStale ? EBTimeHM(s.carDayAsOf) : nil;
