@@ -15,7 +15,7 @@ vehicle state without treating missing data as zero or an estimate as fact.
   gross import, gross export and car charging, with independent coverage. A private
   local store retains up to 90 days; forecasts never enter these totals. See
   [statistics and retention](docs/statistics.md);
-- direct or estimated vehicle SoC with visible provenance. A direct reading can come from a local helper that writes `~/.cache/energybar/vehicle-cloud.json` (`soc`, `at`, `checkedAt`, optional `rangeKm`, `source`, `error`); both the measurement and check must be within the last 30 minutes, and an `error` is shown rather than a number. **⋯ → Vehicle → Vehicle cloud…** exposes cloud status even while a local estimate is available;
+- direct or estimated vehicle SoC with visible provenance. A direct reading can come from a local helper that writes `~/.cache/energybar/vehicle-cloud.json` (`soc`, `at`, `checkedAt`, optional `rangeKm`, `source`, `error`); both the measurement and check must be within the last 30 minutes, and an `error` is shown rather than a number. An `error` of `signed out` or `not linked` needs the helper re-linked, so the Car row says so in amber where the battery bar would be. **⋯ → Vehicle → Vehicle cloud…** exposes cloud status even while a local estimate is available;
 - charger actions whose HTTP failures are shown instead of silently ignored.
 
 The menu-bar item is icon-only by default. Error and unknown states use distinct
