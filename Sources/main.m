@@ -20,7 +20,7 @@
 #import "statistics_view.h"
 #import "learning.h"
 
-static NSString * const EBVersion = @"0.5.4";
+static NSString * const EBVersion = @"0.5.5";
 static NSString * const EBCognitoClientId = @"rol3lsv2vg41783550i18r7vi";
 static NSString * const EBCognitoURL = @"https://cognito-idp.ap-southeast-2.amazonaws.com/";
 static NSString * const EBEvnexBase = @"https://client-api.evnex.io";
