@@ -550,9 +550,7 @@ static EBSnapshot *EBFetch(EBConfig *c, BOOL includeEvnex) {
             s.evnexError = statusResponse.error.localizedDescription ?:
                            detail.errorMessage;
         else
-            s.evnexError = [NSString stringWithFormat:
-                @"Evnex status/detail failed (HTTP %ld)",
-                (long)statusResponse.status];
+            s.evnexError = EBEvnexFailureText(statusResponse.status, statusResponse.data);
         return s;
     }
     s.chargerOK = e.statusOK;

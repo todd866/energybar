@@ -154,6 +154,19 @@ BOOL EBShouldBackoffEvnex(BOOL statusOK, BOOL rateLimited) {
     return !statusOK || rateLimited;
 }
 
+NSString *EBEvnexFailureText(NSInteger httpStatus, NSData *body) {
+    id doc = body.length ? [NSJSONSerialization JSONObjectWithData:body options:0 error:NULL] : nil;
+    NSArray *errors = [doc isKindOfClass:NSDictionary.class] ? doc[@"errors"] : nil;
+    if ([errors isKindOfClass:NSArray.class]) {
+        for (id e in errors) {
+            if ([e isKindOfClass:NSDictionary.class] &&
+                [e[@"title"] isEqual:@"ChargePointOfflineError"])
+                return @"Charger offline";
+        }
+    }
+    return [NSString stringWithFormat:@"Evnex status/detail failed (HTTP %ld)", (long)httpStatus];
+}
+
 NSTimeInterval EBNextDetailPollInterval(NSTimeInterval meterAgeSeconds) {
     const NSTimeInterval normal = 5 * 60.0;
     const NSTimeInterval maximumFreshAge = 7 * 60.0;

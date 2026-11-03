@@ -40,6 +40,15 @@ int main(int argc, const char *argv[]) {
         expectEqual(EBChargerWord(@"CHARGING", @"Transfer", @"FullPower", YES),
                     @"charge", @"charge now");
 
+        NSData *offline = [@"{\"errors\":[{\"status\":\"409\",\"title\":\"ChargePointOfflineError\",\"detail\":\"Charger is offline\"}]}"
+                           dataUsingEncoding:NSUTF8StringEncoding];
+        expectEqual(EBEvnexFailureText(409, offline), @"Charger offline",
+                    @"Evnex 409 ChargePointOfflineError names the offline charger");
+        expectEqual(EBEvnexFailureText(409, [@"not json" dataUsingEncoding:NSUTF8StringEncoding]),
+                    @"Evnex status/detail failed (HTTP 409)", @"unknown 409 keeps the code");
+        expectEqual(EBEvnexFailureText(500, NSData.data),
+                    @"Evnex status/detail failed (HTTP 500)", @"no body keeps the code");
+
         NSString *g = EBGlanceString(YES, 4030, YES, -907, YES,
                                      @"CHARGING", @"Transfer", @"SolarControl", NO);
         expectEqual(g, @"☀ 4.0  ↑0.9  🔌 solar", @"full glance");

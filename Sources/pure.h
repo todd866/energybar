@@ -48,6 +48,10 @@ NSTimeInterval EBNextPollInterval(NSTimeInterval current, BOOL success);
 /// Detail/session health must not be folded into this status decision.
 BOOL EBShouldBackoffEvnex(BOOL statusOK, BOOL rateLimited);
 
+/// Failure label for an Evnex status poll. Evnex answers 409 ChargePointOfflineError
+/// when the charger has lost its own internet link (home Wi-Fi or power out).
+NSString *EBEvnexFailureText(NSInteger httpStatus, NSData *_Nullable body);
+
 /// Align the next charge-point detail request to a roughly five-minute source
 /// clock. A valid late-cycle sample is revisited promptly, while invalid or
 /// already stale ages fall back to the normal five-minute request interval.
