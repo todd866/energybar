@@ -197,3 +197,16 @@ See [forecast implementation](docs/forecast-implementation.md) and
 The popover is prepared before opening, with animation disabled. History reads
 and forecast calculations run outside the opening action; cached content is
 shown immediately with a bounded freshness check.
+
+## The rest of the setup
+
+Energybar is one piece of a larger setup for running several Macs side by side. The other
+public piece:
+
+- [Glancebar](https://github.com/todd866/glancebar): a native menu-bar readout for storage,
+  battery, system load and AI usage, with a small music player. It shares Energybar's visual
+  language.
+
+The machine-sharing tools behind both (slot limiting, cross-Mac agent mail, disk maps, the
+morning check) are being prepared for release as a separate repository; it will be linked here
+when it is public.
