@@ -255,6 +255,12 @@ static NSTextField *EBLabel(NSFont *font, NSRect frame, NSTextAlignment align) {
         datumTextX = datumX + icon + 4;
         datumTextW = EBDatumColumnW - icon - 4;
     }
+    if (self.trailingButton && !self.trailingButton.hidden) {
+        CGFloat btn = 22;
+        CGFloat btnX = EBPanelW - EBPad - btn;
+        self.trailingButton.frame = NSMakeRect(btnX, (EBRowH - btn) / 2, btn, btn);
+        datumTextW = MAX(8, btnX - 4 - datumTextX);
+    }
     _datumL.frame = NSMakeRect(datumTextX, (EBRowH - kDatumH) / 2, datumTextW, kDatumH);
     NSMutableArray *a11y = [NSMutableArray array];
     if (self.title.length) [a11y addObject:self.title];

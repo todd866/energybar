@@ -64,6 +64,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property(copy, nullable) NSString *vehicleTelemetryIssue;
 /// Separate cloud status remains discoverable while a manual/inferred level is in use.
 @property(copy, nullable) NSString *vehicleCloudLine;
+/// Vehicle cloud is linked (not signed out / not linked).
+@property BOOL vehicleCloudLinked;
 @property BOOL vehicleHasInteriorC;
 @property double vehicleInteriorC;
 @property BOOL vehicleHasExteriorC;
@@ -105,6 +107,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(strong) NSButton *solarButton;
 @property(strong) NSButton *chargeNowButton;
 @property(strong) NSButton *stopButton;
+@property(strong) NSButton *carCoolButton;
 @property(strong) NSButton *moreButton;
 @property(strong) NSMenu *gearMenu;
 @end

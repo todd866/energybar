@@ -35,6 +35,8 @@ extern const CGFloat EBPanelW, EBPad, EBRowH, EBValueColumnW, EBDatumColumnW;
 /// Optional SF Symbol beside the datum (e.g. snowflake while cooling).
 @property(nonatomic, copy, nullable) NSString *datumSymbolName;
 @property(nonatomic, copy, nullable) NSString *datumSymbolAccessibilityLabel;
+/// Optional control at the datum column's trailing edge (same row grid).
+@property(nonatomic, strong, nullable) NSButton *trailingButton;
 /// The shared Today caption supplies this datum's period; keep it in spoken text.
 @property(nonatomic) BOOL dailyTotal;
 /// Symbol, gauge and value tint. Nil: secondary (idle / unknown).

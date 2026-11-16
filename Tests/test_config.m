@@ -86,12 +86,6 @@ int main(void) {
         expect([loaded.froniusArchivePath isEqualToString:
                 [root stringByAppendingPathComponent:@".cache/energybar/fronius-pv.json"]],
                @"Fronius archive cache follows configured home");
-        expect([loaded.climateConfigPath isEqualToString:
-                [homeConfig stringByAppendingPathComponent:@"climate.json"]],
-               @"climate config follows configured home");
-        expect([loaded.climateStatePath isEqualToString:
-                [root stringByAppendingPathComponent:@".cache/energybar/climate-state.json"]],
-               @"climate state cache follows configured home");
         setenv("EV_BATTERY_KWH", "nan", 1);
         setenv("EV_CHARGE_EFFICIENCY", "0.9junk", 1);
         setenv("OBD_MAX_AGE_SECONDS", "inf", 1);

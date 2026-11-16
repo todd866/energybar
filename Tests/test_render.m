@@ -1,7 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #import <math.h>
 #import "popover.h"
-#import "climate_view.h"
 #import "pure.h"
 #import "store.h"
 #import "chart.h"
@@ -327,6 +326,8 @@ static EBSnapshotView *EBState(NSString *name) {
         s.vehicleHasExteriorC = YES; s.vehicleExteriorC = 35.0;
         s.vehicleClimateActive = YES;
         s.vehicleClimateAt = [s.referenceDate dateByAddingTimeInterval:-16 * 3600];
+        s.vehicleCloudLinked = YES;
+        s.vehicleCloudLine = @"72% · geely 12:00";
         tod.pvCoverage = tod.span; tod.gridCoverage = tod.span;
         tod.chargeCoverage = tod.span; tod.chargeWh = 1900;
     } else if ([name hasPrefix:@"charge-eta-"]) {
@@ -848,32 +849,6 @@ int main(int argc, const char *argv[]) {
         [[NSFileManager defaultManager] createDirectoryAtPath:renderDir withIntermediateDirectories:YES attributes:nil error:nil];
         [[NSFileManager defaultManager] createDirectoryAtPath:snapDir withIntermediateDirectories:YES attributes:nil error:nil];
 
-        NSString *fixtureRoot = [NSTemporaryDirectory() stringByAppendingPathComponent:
-            [NSString stringWithFormat:@"energybar-climate-render-%d", getpid()]];
-        NSString *fixtureConfig = [fixtureRoot stringByAppendingPathComponent:@"climate.json"];
-        NSString *fixtureState = [fixtureRoot stringByAppendingPathComponent:@"climate-state.json"];
-        [[NSFileManager defaultManager] createDirectoryAtPath:fixtureRoot withIntermediateDirectories:YES attributes:nil error:nil];
-        NSDictionary *fixtureStateDoc = @{
-            @"version": @1, @"todayKWh": @0.4, @"today": @"2026-08-08",
-            @"next": @{@"at": @"2026-08-08T06:30:00+08:00", @"reason": @"departure"},
-            @"blocked": NSNull.null,
-        };
-        [[NSJSONSerialization dataWithJSONObject:fixtureStateDoc options:0 error:nil]
-            writeToFile:fixtureState atomically:YES];
-        for (NSNumber *darkValue in @[@NO, @YES]) {
-            BOOL dark = darkValue.boolValue;
-            EBClimateView *climateView = [[EBClimateView alloc] initWithConfigPath:fixtureConfig
-                                                                        statePath:fixtureState];
-            NSAlert *climateAlert = EBBuildClimateAlert(climateView);
-            [climateAlert layout];
-            EBExpect(climateView.bounds.size.height <= 280, "climate panel fits without scrolling");
-            NSSize climateSize = climateAlert.window.contentView.bounds.size;
-            NSBitmapImageRep *climateRep = EBRenderAtSize(climateAlert.window.contentView, dark, climateSize);
-            EBWritePNG(climateRep, [snapDir stringByAppendingPathComponent:
-                dark ? @"climate-window-dark.png" : @"climate-window-light.png"]);
-            EBWritePNG(climateRep, [renderDir stringByAppendingPathComponent:
-                dark ? @"climate-window-dark.png" : @"climate-window-light.png"]);
-        }
         for (NSNumber *darkValue in @[@NO, @YES]) {
             BOOL dark = darkValue.boolValue;
             NSAlert *alert = EBBuildVehicleCloudAlert(@"cloud — signed out", @"signed out");
@@ -1200,6 +1175,14 @@ int main(int argc, const char *argv[]) {
                              "active climate shows snowflake");
                     EBExpect([[pv.carRow accessibilityHelp] containsString:@"Cabin 39.3 °C"],
                              "cabin help uses precise figures");
+                    EBExpect(!pv.carCoolButton.hidden, "linked cloud shows rapid-cool control");
+                    EBExpect([pv.carCoolButton.accessibilityLabel isEqual:@"Cool cabin"],
+                             "rapid-cool control is labelled");
+                    EBExpect([pv.carCoolButton.toolTip isEqual:@"Rapid cooling · 10 min"],
+                             "rapid-cool tooltip names duration");
+                    EBExpect(pv.carCoolButton.bordered, "rapid-cool is a visible bordered button");
+                    EBAssertNoOverlap(pv.carRow, "car-climate");
+                    EBAssertContained(pv.carCoolButton, "car-climate");
                 }
                 if ([name isEqualToString:@"soc-estimated"]) {
                     NSMenuItem *vehicle = [pv.gearMenu itemWithTag:9001];

@@ -184,6 +184,23 @@ EBPopoverViews *EBBuildPopover(id target) {
                           imageWithSymbolConfiguration:stopCfg];
     v.stopButton.accessibilityLabel = @"Stop";
 
+    NSImageSymbolConfiguration *coolCfg = [NSImageSymbolConfiguration configurationWithPointSize:14
+                                                                                        weight:NSFontWeightMedium];
+    v.carCoolButton = [NSButton buttonWithImage:
+        [[NSImage imageWithSystemSymbolName:@"snowflake" accessibilityDescription:nil]
+         imageWithSymbolConfiguration:coolCfg]
+                                 target:target action:@selector(doCoolCabin:)];
+    v.carCoolButton.bezelStyle = NSBezelStyleRounded;
+    v.carCoolButton.bordered = YES;
+    v.carCoolButton.title = @"";
+    v.carCoolButton.imagePosition = NSImageOnly;
+    v.carCoolButton.imageScaling = NSImageScaleProportionallyDown;
+    v.carCoolButton.toolTip = @"Rapid cooling · 10 min";
+    v.carCoolButton.accessibilityLabel = @"Cool cabin";
+    v.carCoolButton.hidden = YES;
+    v.carRow.trailingButton = v.carCoolButton;
+    [v.carRow addSubview:v.carCoolButton];
+
     NSImageSymbolConfiguration *moreCfg = [NSImageSymbolConfiguration configurationWithPointSize:22
                                                                                           weight:NSFontWeightRegular];
     v.moreButton = [NSButton buttonWithImage:[[NSImage imageWithSystemSymbolName:@"ellipsis.circle"
@@ -206,7 +223,6 @@ EBPopoverViews *EBBuildPopover(id target) {
     v.gearMenu = [NSMenu new];
     [v.gearMenu addItemWithTitle:@"Details…" action:@selector(showDetails:) keyEquivalent:@""];
     [v.gearMenu addItemWithTitle:@"Statistics…" action:@selector(showStatistics:) keyEquivalent:@""];
-    [v.gearMenu addItemWithTitle:@"Climate…" action:@selector(showClimate:) keyEquivalent:@""];
     [v.gearMenu addItemWithTitle:@"Refresh now" action:@selector(refreshNow:) keyEquivalent:@""];
     [v.gearMenu addItemWithTitle:@"Open samples folder" action:@selector(openSamples:) keyEquivalent:@""];
     [v.gearMenu addItemWithTitle:@"Copy diagnostics" action:@selector(copyDiagnostics:) keyEquivalent:@""];
@@ -248,6 +264,17 @@ void EBSetCommandsEnabled(EBPopoverViews *v, BOOL enabled, BOOL canStop) {
     v.chargeNowButton.enabled = enabled;
     v.stopButton.enabled = enabled && canStop;
     [v.modeControl refreshChrome];
+}
+
+static BOOL EBVehicleCloudCoolLinked(EBSnapshotView *s) {
+    if (!s.vehicleCloudLinked) return NO;
+    NSString *issue = s.vehicleTelemetryIssue;
+    if ([issue hasSuffix:@"signed out"] || [issue hasSuffix:@"not linked"]) return NO;
+    if (s.vehicleCloudLine.length) {
+        NSString *low = s.vehicleCloudLine.lowercaseString;
+        if ([low containsString:@"signed out"] || [low containsString:@"not linked"]) return NO;
+    }
+    return YES;
 }
 
 static NSString *EBStale(NSDate *d, NSDate *ref) {
@@ -692,6 +719,8 @@ void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *s, NSArray<NSDictionary 
         carEnergy = [cNote isEqualToString:@"no data"] ? nil :
             [NSString stringWithFormat:@"%@%@ today", cNote.length ? @"≥" : @"", EBFmtKWh(tot.chargeWh)];
     }
+    CGFloat carDatumColumn = EBDatumColumnW;
+    if (EBVehicleCloudCoolLinked(s)) carDatumColumn -= 26;
     NSString *cabinDatum = nil;
     NSString *cabinTip = nil;
     if (s.vehicleHasInteriorC && isfinite(s.vehicleInteriorC)) {
@@ -723,7 +752,7 @@ void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *s, NSArray<NSDictionary 
         if (cabinDatum.length) {
             NSString *combined = carEnergy.length
                 ? [NSString stringWithFormat:@"%@ · %@", carEnergy, cabinDatum] : cabinDatum;
-            car.subline = EBPickFitting(@[cabinDatum, combined], EBDatumFont(), EBDatumColumnW);
+            car.subline = EBPickFitting(@[cabinDatum, combined], EBDatumFont(), carDatumColumn);
         } else {
             car.subline = carEnergy ?: @"—";
         }
@@ -733,13 +762,14 @@ void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *s, NSArray<NSDictionary 
         if (cabinDatum.length) {
             NSString *combined = carEnergy.length
                 ? [NSString stringWithFormat:@"%@ · %@", carEnergy, cabinDatum] : cabinDatum;
-            car.subline = EBPickFitting(@[cabinDatum, combined], EBDatumFont(), EBDatumColumnW);
+            car.subline = EBPickFitting(@[cabinDatum, combined], EBDatumFont(), carDatumColumn);
         } else {
             car.subline = carEnergy ?: (s.chargerOK ? @"no meter" : @"offline");
         }
         if (!carEnergy && !cabinDatum) car.datumInk = s.chargerOK ? EBInkStale() : EBInkCarOnGrid();
     }
     if (cabinTip.length) car.accessibilityHelp = cabinTip;
+    v.carCoolButton.hidden = !EBVehicleCloudCoolLinked(s);
     NSMutableArray<NSString *> *carNotes = [NSMutableArray arrayWithObject:v.statusLabel];
     [carNotes addObject:@"Power now (kW) is the charging rate. Energy today (kWh) is the total delivered since midnight."];
     if (carEnergy && tot.chargeGridWh >= 50)

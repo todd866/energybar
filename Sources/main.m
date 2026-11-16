@@ -18,10 +18,9 @@
 #import "vehicle.h"
 #import "statistics.h"
 #import "statistics_view.h"
-#import "climate_view.h"
 #import "learning.h"
 
-static NSString * const EBVersion = @"0.5.6";
+static NSString * const EBVersion = @"0.5.7";
 static NSString * const EBCognitoClientId = @"rol3lsv2vg41783550i18r7vi";
 static NSString * const EBCognitoURL = @"https://cognito-idp.ap-southeast-2.amazonaws.com/";
 static NSString * const EBEvnexBase = @"https://client-api.evnex.io";
@@ -605,7 +604,7 @@ static NSColor *EBBarColor(EBBarState st, NSString *glyph) {
     return nil;
 }
 
-@interface EBApp : NSObject <NSApplicationDelegate, NSPopoverDelegate, EBClimateViewDelegate>
+@interface EBApp : NSObject <NSApplicationDelegate, NSPopoverDelegate>
 @property EBConfig *config;
 @property EBSnapshot *snap;
 @property NSStatusItem *item;
@@ -1235,6 +1234,9 @@ static NSDictionary *EBForecastCache(void) {
             vm.vehicleClimateAt = self.vehicleCloud.climateAt;
             vm.vehicleTelemetryIssue = !self.vehicle.hasSOC && self.vehicleCloud.lastError.length
                 ? [@"vehicle cloud: " stringByAppendingString:self.vehicleCloud.lastError] : nil;
+            NSString *cloudErr = self.vehicleCloud.lastError;
+            vm.vehicleCloudLinked = ![cloudErr isEqualToString:@"signed out"]
+                && ![cloudErr isEqualToString:@"not linked"];
             vm.inverterW = self.config.inverterW;
             vm.vehicleHasStoredState = self.vehicle.hasSOC || self.vehicle.hasReady
                 || self.vehicle.socInvalidatedAt != nil || vm.vehicleLastKnownSOC != nil;
@@ -1421,24 +1423,24 @@ static NSDictionary *EBForecastCache(void) {
     [EBBuildStatisticsAlert(report) runModal];
 }
 
-- (void)showClimate:(id)sender {
-    (void)sender;
-    EBClimateView *view = [[EBClimateView alloc] initWithConfigPath:self.config.climateConfigPath
-                                                          statePath:self.config.climateStatePath];
-    view.delegate = self;
-    [EBBuildClimateAlert(view) runModal];
-    [view flushToDisk];
+static NSString *EBLastNonemptyStderrLine(NSData *data) {
+    NSString *stderrText = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    NSString *lastLine = nil;
+    for (NSString *line in [stderrText componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+        NSString *trimmed = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (trimmed.length) lastLine = trimmed;
+    }
+    return lastLine;
 }
 
-- (void)climateViewRequestCoolNow:(id)sender completion:(void (^)(NSString *))completion {
-    (void)sender;
+static void EBRunGeelyCoolNow(NSInteger minutes, void (^completion)(NSString * _Nullable error)) {
     if (!completion) return;
     NSString *python = [EBHome() stringByAppendingPathComponent:@".local/state/energybar-geely/venv/bin/python"];
     NSString *script = [EBHome() stringByAppendingPathComponent:@".local/state/energybar-geely/geely_climate.py"];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         NSTask *task = [NSTask new];
         task.launchPath = python;
-        task.arguments = @[script, @"cool-now"];
+        task.arguments = @[script, @"cool-now", @"--minutes", [@(minutes) stringValue]];
         NSPipe *err = [NSPipe pipe];
         task.standardError = err;
         task.standardOutput = [NSPipe pipe];
@@ -1448,18 +1450,56 @@ static NSDictionary *EBForecastCache(void) {
             [task waitUntilExit];
             if (task.terminationStatus != 0) {
                 NSData *edata = [[err fileHandleForReading] readDataToEndOfFile];
-                NSString *stderrText = [[NSString alloc] initWithData:edata encoding:NSUTF8StringEncoding];
-                NSString *lastLine = nil;
-                for (NSString *line in [stderrText componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
-                    NSString *trimmed = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-                    if (trimmed.length) lastLine = trimmed;
-                }
-                failure = lastLine ?: @"cool-now failed";
+                failure = EBLastNonemptyStderrLine(edata) ?: @"cool-now failed";
             }
         } @catch (NSException *exception) {
             failure = exception.reason ?: @"could not start controller";
         }
         completion(failure);
+    });
+}
+
+- (void)doCoolCabin:(id)sender {
+    (void)sender;
+    if (self.views.carCoolButton.hidden || !self.views.carCoolButton.enabled) return;
+    NSAlert *a = [NSAlert new];
+    a.messageText = @"Cool the cabin for 10 minutes?";
+    [a addButtonWithTitle:@"Cancel"];
+    [a addButtonWithTitle:@"Cool"];
+    if ([a runModal] != NSAlertSecondButtonReturn) return;
+    self.views.carCoolButton.enabled = NO;
+  __weak typeof(self) weak = self;
+    EBRunGeelyCoolNow(10, ^(NSString *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (error.length) {
+                weak.views.carCoolButton.enabled = YES;
+                NSAlert *fail = [NSAlert new];
+                fail.messageText = @"Cooling failed";
+                fail.informativeText = error;
+                [fail addButtonWithTitle:@"OK"];
+                [fail runModal];
+                return;
+            }
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 45 * NSEC_PER_SEC),
+                           dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                NSTask *kick = [NSTask new];
+                kick.launchPath = @"/bin/launchctl";
+                kick.arguments = @[
+                    @"kickstart",
+                    [NSString stringWithFormat:@"gui/%u/local.energybar.vehicle-cloud", getuid()],
+                ];
+                kick.standardOutput = [NSPipe pipe];
+                kick.standardError = [NSPipe pipe];
+                @try {
+                    [kick launch];
+                    [kick waitUntilExit];
+                } @catch (__unused NSException *exception) {}
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    weak.views.carCoolButton.enabled = YES;
+                    [weak refresh];
+                });
+            });
+        });
     });
 }
 
