@@ -80,6 +80,11 @@ The Evnex login command creates `~/.cache/evnex/tokens.json`. Energybar refreshe
 the access token and keeps the cache private. It does not use account credentials
 from its `.env`; do not store the Evnex password there.
 
+If the router hands the inverter a new address, `tools/fronius_heal.py` (run every
+10 minutes by a launchd job) finds it on the local /24 by `FRONIUS_INVERTER_SERIAL`,
+rewrites the IP in `FRONIUS_LOCAL_IP` and `FRONIUS_SOLAR_API`, and relaunches
+Energybar. Away from home, or at night with the inverter off, it changes nothing.
+
 ## Build and run
 
 ```sh
