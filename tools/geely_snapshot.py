@@ -23,6 +23,18 @@ def _number(value):
         return None
 
 
+def _bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        low = value.strip().lower()
+        if low == "true":
+            return True
+        if low == "false":
+            return False
+    return None
+
+
 def snapshot_cache(response, *, checked_at: str) -> dict:
     """Keep measurement time separate from check time, including on bad payloads.
 
@@ -59,4 +71,15 @@ def snapshot_cache(response, *, checked_at: str) -> dict:
     distance = _number(_walk(ev, "distanceToEmptyOnBatteryOnly"))
     if distance is not None and distance >= 0:
         out["rangeKm"] = distance
+    climate = _walk(status, "vehicleStatus", "additionalVehicleStatus", "climateStatus")
+    if isinstance(climate, dict):
+        interior = _number(climate.get("interiorTemp"))
+        if interior is not None:
+            out["interiorC"] = interior
+        exterior = _number(climate.get("exteriorTemp"))
+        if exterior is not None:
+            out["exteriorC"] = exterior
+        active = _bool(climate.get("preClimateActive"))
+        if active is not None:
+            out["climateActive"] = active
     return out

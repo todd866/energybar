@@ -7,7 +7,7 @@ SDKROOT="${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
 BUILD_DIR="build"
 mkdir -p "$BUILD_DIR"
 
-python3 -m unittest discover -s Tests -p 'test_geely_snapshot.py'
+python3 -m unittest discover -s Tests -p 'test_geely_*.py'
 
 COMMON=(-fobjc-arc -O0 -g -Wall -Wextra -Werror
     -isysroot "$SDKROOT" -mmacosx-version-min=13.0 -ISources)

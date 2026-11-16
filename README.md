@@ -15,7 +15,7 @@ vehicle state without treating missing data as zero or an estimate as fact.
   gross import, gross export and car charging, with independent coverage. A private
   local store retains up to 90 days; forecasts never enter these totals. See
   [statistics and retention](docs/statistics.md);
-- direct or estimated vehicle SoC with visible provenance. A direct reading can come from a local helper that writes `~/.cache/energybar/vehicle-cloud.json` (`soc`, `at`, `checkedAt`, optional `rangeKm`, `source`, `error`); both the measurement and check must be within the last 30 minutes, and an `error` is shown rather than a number. An `error` of `signed out` or `not linked` needs the helper re-linked, so the Car row says so in amber where the battery bar would be. **⋯ → Vehicle → Vehicle cloud…** exposes cloud status even while a local estimate is available;
+- direct or estimated vehicle SoC with visible provenance. A direct reading can come from a local helper that writes `~/.cache/energybar/vehicle-cloud.json` (`soc`, `at`, `checkedAt`, optional `rangeKm`, `interiorC`, `exteriorC`, `climateActive`, `source`, `error`); both the measurement and check must be within the last 30 minutes, and an `error` is shown rather than a number. An `error` of `signed out` or `not linked` needs the helper re-linked, so the Car row says so in amber where the battery bar would be. **⋯ → Vehicle → Vehicle cloud…** exposes cloud status even while a local estimate is available;
 - charger actions whose HTTP failures are shown instead of silently ignored.
 
 The menu-bar item is icon-only by default. Error and unknown states use distinct
@@ -151,6 +151,23 @@ Replacing tracked fixtures requires both `--refresh-fixtures` and
 - Charge, solar, and stop commands are serialized, controls are disabled in
   flight, 401 responses refresh authentication once, and non-2xx responses are
   surfaced.
+
+## Car climate
+
+A Geely EX5 helper can pre-cool the cabin before a set departure, limit cabin heat
+during the day, and run **Cool now**, under battery and solar rules. Settings live
+in `~/.config/energybar/climate.json`. The controller reads vehicle temperature and
+status from `~/.cache/energybar/vehicle-cloud.json` (including optional
+`interiorC`, `exteriorC`, and `climateActive` from the same cloud poll as SoC) and
+writes its own state to `~/.cache/energybar/climate-state.json`. Grid samples in
+`~/.cache/energybar/samples.jsonl` supply export power when solar-only cooling is
+enabled (car location is not known, so the solar rule applies whenever that option
+is on). Bursts are capped by minimum state of charge, a daily kWh budget for
+all-day mode, and export surplus. `tools/geely_climate.py` provides `tick`
+(launchd, typically every five minutes), `cool-now`, and `status`; deployed copies
+sit beside the Geely helper under `~/.local/state/energybar-geely/`. Each command
+that talks to Geely takes over the single cloud login, so the Geely phone app may
+need to sign in again.
 
 ## Development
 

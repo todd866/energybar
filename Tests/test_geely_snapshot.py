@@ -8,11 +8,14 @@ class SnapshotTests(unittest.TestCase):
     checked = "2026-10-17T05:00:00+00:00"
     measured = int(dt.datetime(2026, 10, 17, 4, 58, tzinfo=dt.timezone.utc).timestamp() * 1000)
 
-    def payload(self, soc="64", updated=None):
+    def payload(self, soc="64", updated=None, climate=None):
+        avs = {"electricVehicleStatus": {
+            "chargeLevel": soc, "distanceToEmptyOnBatteryOnly": "51"}}
+        if climate is not None:
+            avs["climateStatus"] = climate
         return {"data": {"vehicleStatus": {
             "updateTime": self.measured if updated is None else updated,
-            "additionalVehicleStatus": {"electricVehicleStatus": {
-                "chargeLevel": soc, "distanceToEmptyOnBatteryOnly": "51"}}}}}
+            "additionalVehicleStatus": avs}}}
 
     def test_source_time_preserved_across_repeated_checks(self):
         one = snapshot_cache(self.payload(), checked_at=self.checked)
@@ -54,6 +57,24 @@ class SnapshotTests(unittest.TestCase):
     def test_malformed_response(self):
         for value in [None, [], "error", {}, {"data": {"vehicleStatus": []}}]:
             self.assertIn("error", snapshot_cache(value, checked_at=self.checked))
+
+    def test_climate_fields_optional(self):
+        out = snapshot_cache(self.payload(), checked_at=self.checked)
+        self.assertNotIn("interiorC", out)
+        out = snapshot_cache(self.payload(climate={
+            "interiorTemp": "39.3", "exteriorTemp": "28.1", "preClimateActive": "false",
+        }), checked_at=self.checked)
+        self.assertEqual(out["interiorC"], 39.3)
+        self.assertEqual(out["exteriorC"], 28.1)
+        self.assertFalse(out["climateActive"])
+        out = snapshot_cache(self.payload(climate={
+            "interiorTemp": "garbled", "exteriorTemp": "", "preClimateActive": "maybe",
+        }), checked_at=self.checked)
+        self.assertNotIn("interiorC", out)
+        self.assertNotIn("exteriorC", out)
+        self.assertNotIn("climateActive", out)
+        out = snapshot_cache(self.payload(climate={"preClimateActive": "true"}), checked_at=self.checked)
+        self.assertTrue(out["climateActive"])
 
 
 if __name__ == "__main__":
