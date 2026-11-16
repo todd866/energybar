@@ -427,6 +427,39 @@ static NSString *EBAgePhrase(NSTimeInterval age) {
 }
 @end
 
+static BOOL EBClimateBool(id value, BOOL *out) {
+    if ([value isKindOfClass:NSNumber.class] && CFGetTypeID((__bridge CFTypeRef)value) == CFBooleanGetTypeID()) {
+        if (out) *out = [value boolValue];
+        return YES;
+    }
+    if ([value isKindOfClass:NSString.class]) {
+        NSString *s = [value lowercaseString];
+        if ([s isEqualToString:@"true"] || [s isEqualToString:@"1"]) { if (out) *out = YES; return YES; }
+        if ([s isEqualToString:@"false"] || [s isEqualToString:@"0"]) { if (out) *out = NO; return YES; }
+    }
+    return NO;
+}
+
+NSDictionary *EBParseVehicleCloudClimate(NSDictionary *json) {
+    if (![json isKindOfClass:NSDictionary.class]) return @{};
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    NSNumber *interior = EBFiniteStateNumber(json[@"interiorC"]);
+    if (!interior && [json[@"interiorC"] isKindOfClass:NSString.class]) {
+        double v = [json[@"interiorC"] doubleValue];
+        if (isfinite(v)) interior = @(v);
+    }
+    if (interior) out[@"interiorC"] = interior;
+    NSNumber *exterior = EBFiniteStateNumber(json[@"exteriorC"]);
+    if (!exterior && [json[@"exteriorC"] isKindOfClass:NSString.class]) {
+        double v = [json[@"exteriorC"] doubleValue];
+        if (isfinite(v)) exterior = @(v);
+    }
+    if (exterior) out[@"exteriorC"] = exterior;
+    BOOL active = NO;
+    if (EBClimateBool(json[@"climateActive"], &active)) out[@"climateActive"] = @(active);
+    return out;
+}
+
 #pragma mark - OBD seam
 
 @interface EBVehicleOBDProvider ()
@@ -440,6 +473,8 @@ static NSString *EBAgePhrase(NSTimeInterval age) {
     double _soc, _range;
     NSDate *_at, *_checkedAt;
     NSString *_label, *_source, *_error;
+    BOOL _hasInteriorC, _hasExteriorC, _climateActive;
+    double _interiorC, _exteriorC;
 }
 - (instancetype)initWithCachePath:(NSString *)path maxAgeSeconds:(NSTimeInterval)maxAge {
     return [self initWithCachePath:path maxAgeSeconds:maxAge label:@"OBD"];
@@ -470,11 +505,13 @@ static NSDate *EBCacheDate(id value) {
     if (!mtime) {
         _hasSOC = NO; _loadedMtime = nil; _error = nil;
         _at = _checkedAt = nil; _source = nil; _soc = _range = 0;
+        _hasInteriorC = _hasExteriorC = NO; _climateActive = NO; _interiorC = _exteriorC = 0;
         return;
     }
     if (_loadedMtime && [mtime isEqualToDate:_loadedMtime]) return;
     _loadedMtime = mtime;
     _hasSOC = NO; _soc = 0; _range = 0; _at = _checkedAt = nil; _source = nil; _error = nil;
+    _hasInteriorC = _hasExteriorC = NO; _climateActive = NO; _interiorC = _exteriorC = 0;
     NSData *data = [NSData dataWithContentsOfFile:self.cachePath];
     id json = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
     if (![json isKindOfClass:NSDictionary.class]) { _error = @"unreadable"; return; }
@@ -488,6 +525,10 @@ static NSDate *EBCacheDate(id value) {
     if ([d[@"source"] isKindOfClass:NSString.class]) _source = d[@"source"];
     if ([d[@"error"] isKindOfClass:NSString.class]) _error = d[@"error"];
     if (_hasSOC && !_at && !_error.length) _error = @"measurement time unavailable";
+    NSDictionary *climate = EBParseVehicleCloudClimate(d);
+    if (climate[@"interiorC"]) { _hasInteriorC = YES; _interiorC = [climate[@"interiorC"] doubleValue]; }
+    if (climate[@"exteriorC"]) { _hasExteriorC = YES; _exteriorC = [climate[@"exteriorC"] doubleValue]; }
+    if (climate[@"climateActive"]) _climateActive = [climate[@"climateActive"] boolValue];
 }
 - (BOOL)fresh {
     [self reloadIfChanged];
@@ -507,6 +548,12 @@ static NSDate *EBCacheDate(id value) {
 - (NSDate *)readyUpdatedAt { return nil; }
 - (NSString *)lastError { [self reloadIfChanged]; return _error; }
 - (double)rangeKm { return [self available] ? _range : 0; }
+- (BOOL)hasInteriorC { [self reloadIfChanged]; return _hasInteriorC; }
+- (double)interiorC { [self reloadIfChanged]; return _interiorC; }
+- (BOOL)hasExteriorC { [self reloadIfChanged]; return _hasExteriorC; }
+- (double)exteriorC { [self reloadIfChanged]; return _exteriorC; }
+- (BOOL)climateActive { [self reloadIfChanged]; return _climateActive; }
+- (NSDate *)climateAt { [self reloadIfChanged]; return _hasInteriorC ? (_at ?: _checkedAt) : nil; }
 - (NSString *)statusLine {
     NSString *name = _source ?: _label;
     if ([self available]) {
@@ -530,6 +577,9 @@ static NSDate *EBCacheDate(id value) {
         @"readingAt": _at ? EBDateString(_at) : NSNull.null,
         @"checkedAt": _checkedAt ? EBDateString(_checkedAt) : NSNull.null,
         @"error": _error ?: NSNull.null,
+        @"interiorC": _hasInteriorC ? @(_interiorC) : NSNull.null,
+        @"exteriorC": _hasExteriorC ? @(_exteriorC) : NSNull.null,
+        @"climateActive": @(_climateActive),
     };
 }
 @end

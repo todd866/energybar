@@ -32,6 +32,9 @@ extern const CGFloat EBPanelW, EBPad, EBRowH, EBValueColumnW, EBDatumColumnW;
 @property(nonatomic, copy) NSString *unit;
 /// Short datum right of the value ("8.2 kWh today", "stale 4m").
 @property(nonatomic, copy, nullable) NSString *subline;
+/// Optional SF Symbol beside the datum (e.g. snowflake while cooling).
+@property(nonatomic, copy, nullable) NSString *datumSymbolName;
+@property(nonatomic, copy, nullable) NSString *datumSymbolAccessibilityLabel;
 /// The shared Today caption supplies this datum's period; keep it in spoken text.
 @property(nonatomic) BOOL dailyTotal;
 /// Symbol, gauge and value tint. Nil: secondary (idle / unknown).

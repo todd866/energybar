@@ -228,6 +228,21 @@ int main(void) {
             [fresh writeToFile:cachePath atomically:YES];
             EBVehicleOBDProvider *cloud = [[EBVehicleOBDProvider alloc] initWithCachePath:cachePath
                                                                           maxAgeSeconds:1800 label:@"cloud"];
+            NSDictionary *climateParse = EBParseVehicleCloudClimate(@{
+                @"interiorC": @"39.3", @"exteriorC": @"35", @"climateActive": @"false"});
+            expect(fabs([climateParse[@"interiorC"] doubleValue] - 39.3) < 0.001 &&
+                   ![climateParse[@"climateActive"] boolValue], @"pure climate parse");
+            NSData *climateFresh = [NSJSONSerialization dataWithJSONObject:@{
+                @"soc": @64, @"at": now, @"checkedAt": now,
+                @"interiorC": @"39.3", @"exteriorC": @"35.0", @"climateActive": @"true"
+            } options:0 error:nil];
+            [climateFresh writeToFile:cachePath atomically:YES];
+            EBVehicleOBDProvider *climateCloud = [[EBVehicleOBDProvider alloc] initWithCachePath:cachePath
+                                                                                  maxAgeSeconds:1800 label:@"cloud"];
+            expect(climateCloud.hasInteriorC && fabs(climateCloud.interiorC - 39.3) < 0.001,
+                   @"cloud cache exposes interior");
+            expect(climateCloud.climateActive && climateCloud.hasExteriorC, @"cloud climate fields");
+            [fresh writeToFile:cachePath atomically:YES];
             expect(cloud.available && cloud.hasSOC && fabs(cloud.socPercent - 64) < 0.001 && !cloud.socIsEstimate,
                    @"cloud cache: fresh reading is a direct level");
             expect([cloud.statusLine containsString:@"64%"] && [cloud.statusLine containsString:@"51 km"],

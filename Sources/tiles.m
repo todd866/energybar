@@ -123,6 +123,7 @@ static NSTextField *EBLabel(NSFont *font, NSRect frame, NSTextAlignment align) {
 
 @implementation EBInstrumentRow {
     NSImageView *_symbol;
+    NSImageView *_datumSymbol;
     NSTextField *_nameL, *_valueL, *_datumL, *_targetL, *_noteL;
     NSBox *_targetTick;
     EBGauge *_gauge;
@@ -156,7 +157,10 @@ static NSTextField *EBLabel(NSFont *font, NSRect frame, NSTextAlignment align) {
     // The daily money is a figure in the Today column, not a bar: a bar in the Now position
     // that showed today's net cost read as "importing" while the live flow was export.
     // _balanceGauge stays as the model for that figure and its details; it is not drawn.
-    for (NSView *v in @[_symbol, _nameL, _gauge, _trend, _valueL, _datumL]) [self addSubview:v];
+    _datumSymbol = [NSImageView new];
+    _datumSymbol.imageScaling = NSImageScaleProportionallyDown;
+    _datumSymbol.hidden = YES;
+    for (NSView *v in @[_symbol, _nameL, _gauge, _trend, _valueL, _datumL, _datumSymbol]) [self addSubview:v];
     _targetL = EBLabel([NSFont monospacedDigitSystemFontOfSize:10.5 weight:NSFontWeightMedium], NSZeroRect, NSTextAlignmentCenter);
     _targetL.hidden = YES;
     _targetTick = [NSBox new]; _targetTick.boxType = NSBoxCustom;
@@ -234,6 +238,24 @@ static NSTextField *EBLabel(NSFont *font, NSRect frame, NSTextAlignment align) {
     _datumL.stringValue = datum;
     _datumL.textColor = self.balanceGauge.hidden ? (self.datumInk ?: EBInkSecondary())
         : (self.balanceGauge.netInk ?: EBInkSecondary());
+    BOOL showDatumSymbol = self.datumSymbolName.length > 0;
+    _datumSymbol.hidden = !showDatumSymbol;
+    CGFloat datumTextX = datumX;
+    CGFloat datumTextW = EBDatumColumnW;
+    if (showDatumSymbol) {
+        CGFloat icon = 12;
+        _datumSymbol.frame = NSMakeRect(datumX, (EBRowH - icon) / 2, icon, icon);
+        NSImageSymbolConfiguration *dcfg = [NSImageSymbolConfiguration configurationWithPointSize:icon
+                                                                                          weight:NSFontWeightRegular];
+        _datumSymbol.image = [[NSImage imageWithSystemSymbolName:self.datumSymbolName
+                                          accessibilityDescription:self.datumSymbolAccessibilityLabel]
+                              imageWithSymbolConfiguration:dcfg];
+        _datumSymbol.contentTintColor = EBInkSecondary();
+        _datumSymbol.accessibilityLabel = self.datumSymbolAccessibilityLabel;
+        datumTextX = datumX + icon + 4;
+        datumTextW = EBDatumColumnW - icon - 4;
+    }
+    _datumL.frame = NSMakeRect(datumTextX, (EBRowH - kDatumH) / 2, datumTextW, kDatumH);
     NSMutableArray *a11y = [NSMutableArray array];
     if (self.title.length) [a11y addObject:self.title];
     if (known && [self.unit isEqualToString:@"kW"]) [a11y addObject:@"power now"];

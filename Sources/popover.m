@@ -206,6 +206,7 @@ EBPopoverViews *EBBuildPopover(id target) {
     v.gearMenu = [NSMenu new];
     [v.gearMenu addItemWithTitle:@"Details…" action:@selector(showDetails:) keyEquivalent:@""];
     [v.gearMenu addItemWithTitle:@"Statistics…" action:@selector(showStatistics:) keyEquivalent:@""];
+    [v.gearMenu addItemWithTitle:@"Climate…" action:@selector(showClimate:) keyEquivalent:@""];
     [v.gearMenu addItemWithTitle:@"Refresh now" action:@selector(refreshNow:) keyEquivalent:@""];
     [v.gearMenu addItemWithTitle:@"Open samples folder" action:@selector(openSamples:) keyEquivalent:@""];
     [v.gearMenu addItemWithTitle:@"Copy diagnostics" action:@selector(copyDiagnostics:) keyEquivalent:@""];
@@ -656,6 +657,8 @@ void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *s, NSArray<NSDictionary 
     car.targetFraction = currentSOC && eta.label.length ? eta.targetPercent / 100 : -1;
     car.targetLabel = eta.label;
     car.targetHelp = eta.detail;
+    car.datumSymbolName = nil;
+    car.datumSymbolAccessibilityLabel = nil;
     car.trendFrom = car.trendTo = -1;
     if (carSOC >= 0) {
         NSColor *packInk = blue;
@@ -689,16 +692,54 @@ void EBApplySnapshot(EBPopoverViews *v, EBSnapshotView *s, NSArray<NSDictionary 
         carEnergy = [cNote isEqualToString:@"no data"] ? nil :
             [NSString stringWithFormat:@"%@%@ today", cNote.length ? @"≥" : @"", EBFmtKWh(tot.chargeWh)];
     }
+    NSString *cabinDatum = nil;
+    NSString *cabinTip = nil;
+    if (s.vehicleHasInteriorC && isfinite(s.vehicleInteriorC)) {
+        NSString *age = EBAgeNote(s.vehicleClimateAt, referenceDate);
+        if ([age isEqualToString:@"just now"]) age = @"now";
+        else age = [age stringByReplacingOccurrencesOfString:@" ago" withString:@""];
+        cabinDatum = [NSString stringWithFormat:@"%.0f° %@", s.vehicleInteriorC, age];
+        NSMutableArray *tipParts = [NSMutableArray arrayWithObject:
+            [NSString stringWithFormat:@"Cabin %.1f °C", s.vehicleInteriorC]];
+        if (s.vehicleHasExteriorC)
+            [tipParts addObject:[NSString stringWithFormat:@"outside %.1f °C", s.vehicleExteriorC]];
+        if (s.vehicleClimateAt) {
+            NSTimeInterval h = [referenceDate timeIntervalSinceDate:s.vehicleClimateAt];
+            h = MAX(0, h);
+            if (h < 3600)
+                [tipParts addObject:[NSString stringWithFormat:@"reading %.0fm old", h / 60]];
+            else
+                [tipParts addObject:[NSString stringWithFormat:@"reading %.0fh old", h / 3600]];
+        }
+        cabinTip = [tipParts componentsJoinedByString:@" · "];
+        if (s.vehicleClimateActive) {
+            car.datumSymbolName = @"snowflake";
+            car.datumSymbolAccessibilityLabel = @"Cooling";
+        }
+    }
     if (meter) {
         car.value = EBFmtKW(s.chargeW);
         car.unit = @"kW";
-        car.subline = carEnergy ?: @"—";
+        if (cabinDatum.length) {
+            NSString *combined = carEnergy.length
+                ? [NSString stringWithFormat:@"%@ · %@", carEnergy, cabinDatum] : cabinDatum;
+            car.subline = EBPickFitting(@[cabinDatum, combined], EBDatumFont(), EBDatumColumnW);
+        } else {
+            car.subline = carEnergy ?: @"—";
+        }
     } else {
         car.value = @"—";
         car.unit = @"";
-        car.subline = carEnergy ?: (s.chargerOK ? @"no meter" : @"offline");
-        if (!carEnergy) car.datumInk = s.chargerOK ? EBInkStale() : EBInkCarOnGrid();
+        if (cabinDatum.length) {
+            NSString *combined = carEnergy.length
+                ? [NSString stringWithFormat:@"%@ · %@", carEnergy, cabinDatum] : cabinDatum;
+            car.subline = EBPickFitting(@[cabinDatum, combined], EBDatumFont(), EBDatumColumnW);
+        } else {
+            car.subline = carEnergy ?: (s.chargerOK ? @"no meter" : @"offline");
+        }
+        if (!carEnergy && !cabinDatum) car.datumInk = s.chargerOK ? EBInkStale() : EBInkCarOnGrid();
     }
+    if (cabinTip.length) car.accessibilityHelp = cabinTip;
     NSMutableArray<NSString *> *carNotes = [NSMutableArray arrayWithObject:v.statusLabel];
     [carNotes addObject:@"Power now (kW) is the charging rate. Energy today (kWh) is the total delivered since midnight."];
     if (carEnergy && tot.chargeGridWh >= 50)

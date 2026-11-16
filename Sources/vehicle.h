@@ -80,12 +80,22 @@ id<EBVehicleProvider> EBResolveVehicle(NSArray<id<EBVehicleProvider>> *chain);
 /// helper): JSON `{ "soc": 0…100, "at": ISO-8601 reading time, "checkedAt": ISO-8601 helper
 /// run, "source": "cloud", "rangeKm": n, "error": "…" }`. Available only when `soc` is
 /// present and the helper checked within maxAge; never invents a level from a stale file.
+/// Pure parse of optional vehicle-cloud climate fields. Keys: interiorC, exteriorC, climateActive.
+NSDictionary *EBParseVehicleCloudClimate(NSDictionary *json);
+
 @interface EBVehicleOBDProvider : NSObject <EBVehicleProvider>
 - (instancetype)initWithCachePath:(NSString *)path maxAgeSeconds:(NSTimeInterval)maxAge;
 - (instancetype)initWithCachePath:(NSString *)path maxAgeSeconds:(NSTimeInterval)maxAge
                             label:(NSString *)label;
 @property(readonly, nullable) NSString *lastError;
 @property(readonly) double rangeKm;   // 0 = not reported
+/// Cabin climate from the cloud cache; uses the same `at` as the SOC reading when present.
+@property(readonly) BOOL hasInteriorC;
+@property(readonly) double interiorC;
+@property(readonly) BOOL hasExteriorC;
+@property(readonly) double exteriorC;
+@property(readonly) BOOL climateActive;
+@property(readonly, nullable) NSDate *climateAt;
 @end
 
 /// Seam for a future manufacturer API client. available == NO until

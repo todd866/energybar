@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 #import <math.h>
 #import "popover.h"
+#import "climate_view.h"
 #import "pure.h"
 #import "store.h"
 #import "chart.h"
@@ -315,6 +316,19 @@ static EBSnapshotView *EBState(NSString *name) {
         s.pvArchiveAvailable = YES; s.pvArchiveWh = 26030;
         s.pvArchiveIntervalCount = 172;
         tod.span = 15 * 3600;
+    } else if ([name isEqualToString:@"car-climate"]) {
+        s.pvOK = YES; s.pvW = 4800; s.eDayWh = 8200; s.inverterW = 5000;
+        s.gridOK = YES; s.supplyW = -100; s.chargeW = 2600;
+        s.chargerOK = YES; s.haveOcpp = YES;
+        s.ocppStatus = @"CHARGING"; s.chargingLogic = @"Transfer";
+        s.chargingCurrentControl = @"SolarControl";
+        s.vehicleHasSOC = YES; s.vehicleSOC = 72; s.vehicleSOCIsEstimate = NO;
+        s.vehicleHasInteriorC = YES; s.vehicleInteriorC = 39.3;
+        s.vehicleHasExteriorC = YES; s.vehicleExteriorC = 35.0;
+        s.vehicleClimateActive = YES;
+        s.vehicleClimateAt = [s.referenceDate dateByAddingTimeInterval:-16 * 3600];
+        tod.pvCoverage = tod.span; tod.gridCoverage = tod.span;
+        tod.chargeCoverage = tod.span; tod.chargeWh = 1900;
     } else if ([name hasPrefix:@"charge-eta-"]) {
         s.pvOK = YES; s.pvW = 4200; s.eDayWh = 7000;
         s.gridOK = YES; s.supplyW = 200; s.chargeW = 3200;
@@ -814,7 +828,7 @@ int main(int argc, const char *argv[]) {
                              "rounded limits contain every bar");
             }
         }
-        NSArray *states = @[@"sunny-export", @"solar-charging", @"charge-now-importing", @"night",
+        NSArray *states = @[@"sunny-export", @"solar-charging", @"car-climate", @"charge-now-importing", @"night",
                             @"evnex-down", @"meter-stale", @"unknown-ocpp", @"meter-only",
                             @"history-down", @"vehicle-store-down", @"cold-start",
                             @"partial-day", @"recovered-session", @"recovered-offline", @"soc-estimated",
@@ -834,6 +848,32 @@ int main(int argc, const char *argv[]) {
         [[NSFileManager defaultManager] createDirectoryAtPath:renderDir withIntermediateDirectories:YES attributes:nil error:nil];
         [[NSFileManager defaultManager] createDirectoryAtPath:snapDir withIntermediateDirectories:YES attributes:nil error:nil];
 
+        NSString *fixtureRoot = [NSTemporaryDirectory() stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"energybar-climate-render-%d", getpid()]];
+        NSString *fixtureConfig = [fixtureRoot stringByAppendingPathComponent:@"climate.json"];
+        NSString *fixtureState = [fixtureRoot stringByAppendingPathComponent:@"climate-state.json"];
+        [[NSFileManager defaultManager] createDirectoryAtPath:fixtureRoot withIntermediateDirectories:YES attributes:nil error:nil];
+        NSDictionary *fixtureStateDoc = @{
+            @"version": @1, @"todayKWh": @0.4, @"today": @"2026-08-08",
+            @"next": @{@"at": @"2026-08-08T06:30:00+08:00", @"reason": @"departure"},
+            @"blocked": NSNull.null,
+        };
+        [[NSJSONSerialization dataWithJSONObject:fixtureStateDoc options:0 error:nil]
+            writeToFile:fixtureState atomically:YES];
+        for (NSNumber *darkValue in @[@NO, @YES]) {
+            BOOL dark = darkValue.boolValue;
+            EBClimateView *climateView = [[EBClimateView alloc] initWithConfigPath:fixtureConfig
+                                                                        statePath:fixtureState];
+            NSAlert *climateAlert = EBBuildClimateAlert(climateView);
+            [climateAlert layout];
+            EBExpect(climateView.bounds.size.height <= 280, "climate panel fits without scrolling");
+            NSSize climateSize = climateAlert.window.contentView.bounds.size;
+            NSBitmapImageRep *climateRep = EBRenderAtSize(climateAlert.window.contentView, dark, climateSize);
+            EBWritePNG(climateRep, [snapDir stringByAppendingPathComponent:
+                dark ? @"climate-window-dark.png" : @"climate-window-light.png"]);
+            EBWritePNG(climateRep, [renderDir stringByAppendingPathComponent:
+                dark ? @"climate-window-dark.png" : @"climate-window-light.png"]);
+        }
         for (NSNumber *darkValue in @[@NO, @YES]) {
             BOOL dark = darkValue.boolValue;
             NSAlert *alert = EBBuildVehicleCloudAlert(@"cloud — signed out", @"signed out");
@@ -1152,6 +1192,14 @@ int main(int argc, const char *argv[]) {
                     if ([name hasSuffix:@"complete"])
                         EBExpect(pv.carRow.targetLabel.length == 0 && pv.carRow.trendFrom < 0,
                                  "completed car has no replacement text, tick or trend arrow");
+                }
+                if ([name isEqualToString:@"car-climate"]) {
+                    EBExpect([pv.carRow.subline isEqual:@"39° 16h"],
+                             "car row shows cabin temperature and age");
+                    EBExpect([pv.carRow.datumSymbolName isEqual:@"snowflake"],
+                             "active climate shows snowflake");
+                    EBExpect([[pv.carRow accessibilityHelp] containsString:@"Cabin 39.3 °C"],
+                             "cabin help uses precise figures");
                 }
                 if ([name isEqualToString:@"soc-estimated"]) {
                     NSMenuItem *vehicle = [pv.gearMenu itemWithTag:9001];

@@ -27,6 +27,7 @@ run_foundation test_ui Sources/store.m Tests/test_ui.m
 run_foundation test_soc Sources/pure.m Sources/store.m Sources/soc.m Tests/test_soc.m
 run_foundation test_vehicle Sources/pure.m Sources/store.m Sources/soc.m Sources/vehicle.m Tests/test_vehicle.m
 run_foundation test_config Sources/config.m Sources/store.m Sources/tariff.m Tests/test_config.m
+run_foundation test_climate Sources/climate.m Sources/vehicle.m Sources/pure.m Sources/store.m Sources/soc.m Tests/test_climate.m
 run_foundation test_tariff Sources/store.m Sources/tariff.m Tests/test_tariff.m
 run_foundation test_parse_hardening Sources/parse.m Tests/test_parse_hardening.m
 run_foundation test_status_glyph Sources/pure.m Tests/test_status_glyph.m
@@ -43,7 +44,7 @@ run_foundation test_learning Sources/store.m Sources/pure.m Sources/charge_estim
 
 "$CC" "${COMMON[@]}" \
     Sources/pure.m Sources/parse.m Sources/store.m Sources/tariff.m Sources/soc.m Sources/chart.m \
-    Sources/tiles.m Sources/charge_estimate.m Sources/forecast.m Sources/popover.m Sources/vehicle.m Tests/test_render.m \
+    Sources/tiles.m Sources/charge_estimate.m Sources/forecast.m Sources/popover.m Sources/vehicle.m Sources/climate.m Sources/climate_view.m Tests/test_render.m \
     -framework Cocoa -o "$BUILD_DIR/test_render"
 RENDER_ARGS=()
 if [[ -n "${1:-}" ]]; then RENDER_ARGS+=("$1"); fi
@@ -55,7 +56,7 @@ fi
 "$CC" "${COMMON[@]}" \
     Sources/config.m Sources/tariff.m Sources/fixture.m Sources/pure.m Sources/parse.m Sources/store.m \
     Sources/sessions.m Sources/fronius_archive.m Sources/soc.m Sources/chart.m Sources/tiles.m \
-    Sources/charge_estimate.m Sources/forecast.m Sources/popover.m Sources/vehicle.m Sources/statistics.m Sources/learning.m Sources/statistics_view.m Tests/test_presentation.m \
+    Sources/charge_estimate.m Sources/forecast.m Sources/popover.m Sources/vehicle.m Sources/climate.m Sources/climate_view.m Sources/statistics.m Sources/learning.m Sources/statistics_view.m Tests/test_presentation.m \
     -framework Cocoa -framework ServiceManagement -o "$BUILD_DIR/test_presentation"
 "$BUILD_DIR/test_presentation"
 

@@ -183,6 +183,8 @@ EBConfig *EBLoadConfig(void) {
     config.cloudCachePath = cloudPath.length
         ? cloudPath.stringByExpandingTildeInPath.stringByStandardizingPath
         : [EBHome() stringByAppendingPathComponent:@".cache/energybar/vehicle-cloud.json"];
+    config.climateConfigPath = [EBHome() stringByAppendingPathComponent:@".config/energybar/climate.json"];
+    config.climateStatePath = [EBHome() stringByAppendingPathComponent:@".cache/energybar/climate-state.json"];
 
     NSString *barText = EBConfigString(file, @"ENERGYBAR_BAR_TEXT").lowercaseString;
     BOOL textEnabled = [barText isEqualToString:@"1"] || [barText isEqualToString:@"true"] ||

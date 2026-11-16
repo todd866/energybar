@@ -18,6 +18,7 @@
 #import "vehicle.h"
 #import "statistics.h"
 #import "statistics_view.h"
+#import "climate_view.h"
 #import "learning.h"
 
 static NSString * const EBVersion = @"0.5.5";
@@ -604,7 +605,7 @@ static NSColor *EBBarColor(EBBarState st, NSString *glyph) {
     return nil;
 }
 
-@interface EBApp : NSObject <NSApplicationDelegate, NSPopoverDelegate>
+@interface EBApp : NSObject <NSApplicationDelegate, NSPopoverDelegate, EBClimateViewDelegate>
 @property EBConfig *config;
 @property EBSnapshot *snap;
 @property NSStatusItem *item;
@@ -1226,6 +1227,12 @@ static NSDictionary *EBForecastCache(void) {
             vm.vehicleChargeTargetPercent = self.config.evChargeTargetPercent;
             vm.vehicleSOCAt = self.vehicle.socUpdatedAt;
             vm.vehicleCloudLine = self.vehicleCloud.statusLine;
+            vm.vehicleHasInteriorC = self.vehicleCloud.hasInteriorC;
+            vm.vehicleInteriorC = self.vehicleCloud.interiorC;
+            vm.vehicleHasExteriorC = self.vehicleCloud.hasExteriorC;
+            vm.vehicleExteriorC = self.vehicleCloud.exteriorC;
+            vm.vehicleClimateActive = self.vehicleCloud.climateActive;
+            vm.vehicleClimateAt = self.vehicleCloud.climateAt;
             vm.vehicleTelemetryIssue = !self.vehicle.hasSOC && self.vehicleCloud.lastError.length
                 ? [@"vehicle cloud: " stringByAppendingString:self.vehicleCloud.lastError] : nil;
             vm.inverterW = self.config.inverterW;
@@ -1412,6 +1419,48 @@ static NSDictionary *EBForecastCache(void) {
         report.error = @"No recorded history is available yet. Statistics prepare in the background.";
     }
     [EBBuildStatisticsAlert(report) runModal];
+}
+
+- (void)showClimate:(id)sender {
+    (void)sender;
+    EBClimateView *view = [[EBClimateView alloc] initWithConfigPath:self.config.climateConfigPath
+                                                          statePath:self.config.climateStatePath];
+    view.delegate = self;
+    [EBBuildClimateAlert(view) runModal];
+    [view flushToDisk];
+}
+
+- (void)climateViewRequestCoolNow:(id)sender completion:(void (^)(NSString *))completion {
+    (void)sender;
+    if (!completion) return;
+    NSString *python = [EBHome() stringByAppendingPathComponent:@".local/state/energybar-geely/venv/bin/python"];
+    NSString *script = [EBHome() stringByAppendingPathComponent:@".local/state/energybar-geely/geely_climate.py"];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSTask *task = [NSTask new];
+        task.launchPath = python;
+        task.arguments = @[script, @"cool-now"];
+        NSPipe *err = [NSPipe pipe];
+        task.standardError = err;
+        task.standardOutput = [NSPipe pipe];
+        NSString *failure = nil;
+        @try {
+            [task launch];
+            [task waitUntilExit];
+            if (task.terminationStatus != 0) {
+                NSData *edata = [[err fileHandleForReading] readDataToEndOfFile];
+                NSString *stderrText = [[NSString alloc] initWithData:edata encoding:NSUTF8StringEncoding];
+                NSString *lastLine = nil;
+                for (NSString *line in [stderrText componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+                    NSString *trimmed = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+                    if (trimmed.length) lastLine = trimmed;
+                }
+                failure = lastLine ?: @"cool-now failed";
+            }
+        } @catch (NSException *exception) {
+            failure = exception.reason ?: @"could not start controller";
+        }
+        completion(failure);
+    });
 }
 
 - (void)refreshNow:(id)sender {

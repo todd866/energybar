@@ -64,6 +64,12 @@ NS_ASSUME_NONNULL_BEGIN
 @property(copy, nullable) NSString *vehicleTelemetryIssue;
 /// Separate cloud status remains discoverable while a manual/inferred level is in use.
 @property(copy, nullable) NSString *vehicleCloudLine;
+@property BOOL vehicleHasInteriorC;
+@property double vehicleInteriorC;
+@property BOOL vehicleHasExteriorC;
+@property double vehicleExteriorC;
+@property BOOL vehicleClimateActive;
+@property(copy, nullable) NSDate *vehicleClimateAt;
 /// Inverter capacity (W) from INVERTER_KW; the Solar bar's full scale. 0 = unknown.
 @property double inverterW;
 @property BOOL vehicleHasReady;
