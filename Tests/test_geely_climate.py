@@ -1,5 +1,7 @@
 import datetime as dt
+import os
 import tempfile
+import time
 import unittest
 from zoneinfo import ZoneInfo
 
@@ -21,6 +23,26 @@ from tools.geely_climate import (
 )
 
 PERTH = ZoneInfo("Australia/Perth")
+
+# The controller reads schedules (departure, all-day window, weekdays) in the Mac's local
+# zone, which is where the car is. The fixtures below are written in Perth time, so run the
+# module in Perth whatever zone the host is in (a CI runner is UTC).
+_saved_tz = None
+
+
+def setUpModule() -> None:
+    global _saved_tz
+    _saved_tz = os.environ.get("TZ")
+    os.environ["TZ"] = "Australia/Perth"
+    time.tzset()
+
+
+def tearDownModule() -> None:
+    if _saved_tz is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = _saved_tz
+    time.tzset()
 
 
 def at(hour: int, minute: int = 0, day: int = 16, month: int = 11, year: int = 2026) -> dt.datetime:
